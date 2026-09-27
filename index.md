@@ -43,6 +43,7 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 | Read tool and workspace path discipline | `tools/files.go` |
 | Shell tool | `tools/command.go` |
 | Runtime config + session manager | `runtime/session_manager.go`, `runtime/*.go` |
+| Kaggle deployment (notebook, metadata, notes) | `deploy/kaggle/` |
 | Stateless runtime state ↔ Cloudflare D1 | `runtime/d1store/client.go`, `runtime/d1store/sync.go` |
 | Mobile gateway (AIxodia, the only transport) + auth gate | `transport/mobile/gateway.go`, `transport/mobile/auth.go`, `transport/mobile/tunnel.go`, `transport/mobile/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `transport/mobile/admin.go` (provider/key pool + agent settings ที่มือถือจัดการ), `cmd/ai-engine/mobile.go` |
 | Phone-owned provider keys + per-agent routes (file ↔ D1) | `cmd/ai-engine/admin_store.go`, `runtime/provider_manager.go` (Reload/Rt/RefreshProvider) |

@@ -1234,3 +1234,15 @@ Reason: วัดจริงเมื่อ 2026-09-27 — คำขอเด�
 Impact: sdk/providers/opencode/opencode.go (FreeTierHeaders), sdk/providers/jev/jev.go (Config.Headers + ส่ง header), sdk/providers/jev/jev_test.go
 Validation: `go build ./...`; `go vet ./...`; `go test ./... -count=1` ผ่าน 13 package; ทดสอบจริงนอก daemon — `ls -la`/`go test ./...` ผ่าน, `rm -rf /` ถูกปฏิเสธ, exfiltration ถูกปฏิเสธ, `git push --force` ที่อยู่นอกขอบเขตถูกปฏิเสธ
 Status: accepted
+
+CHANGE-091
+
+Date: 2026-09-27
+Type: change
+Request: "ทดสอบว่า jev ใช้งานได้จริงหรือไม่" — ต้อง deploy โค้ดที่แก้แล้วไปทดสอบบนเครื่องจริง
+Conflict: ไม่มีข้อกำหนดเดิมที่วาง recipe ของการ deploy; notebook อยู่นอก repo ทำให้กู้ kernel ที่ลบแล้วไม่ได้จากตัว repo
+New: `deploy/kaggle/` เก็บ `aixodia.ipynb` + `kernel-metadata.json` + README ที่ระบุข้อจำกัด 5 concurrent CPU sessions, วิธีแยก daemon ด้วย `nodes.version` และว่า JEV ไม่ต้องใช้ credential
+Reason: push kernel ใหม่ติด `Maximum batch CPU session count of 5 reached` เพราะมีหลายเวอร์ชันค้างอยู่ และ Kaggle ไม่มีคำสั่ง cancel ใน CLI/API ที่เรียกได้ — ทางที่คืนที่เหลือคือลบ kernel แล้ว push ใหม่ ซึ่งทำได้ก็ต่อเมื่อ notebook อยู่ใน repo
+Impact: deploy/kaggle/{aixodia.ipynb,kernel-metadata.json,README.md}, index.md
+Validation: `go build ./...`; `go test ./... -count=1` ผ่าน 13 package; notebook ผ่าน Phase A ใน kernel (TEST_EXIT=0) และประกาศ `repo_ready` พร้อม sha
+Status: accepted
