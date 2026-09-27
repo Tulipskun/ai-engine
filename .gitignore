@@ -1,0 +1,5 @@
+# Local prebuilt binaries are published as GitHub Release assets, not committed.
+bin/ai-*
+bin/checksums.txt
+!bin/.gitkeep
+dist/

@@ -1,0 +1,37 @@
+# Builds the daemon binary for Linux arm64 as a CI artifact.
+# There is no release/tag pipeline any more: `ai update` and the
+# install-from-release path were removed with the single-surface daemon
+# (REQ-047, CHANGE-059), so deployments are a normal `go build` + run.
+name: Build daemon
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./... -timeout 2m
+      - name: Build (linux arm64)
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.sha }}" -o dist/ai-engine-linux-arm64 ./cmd/ai-engine
+          sha256sum dist/ai-engine-linux-arm64 | tee dist/checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-engine-linux-arm64
+          path: dist/
