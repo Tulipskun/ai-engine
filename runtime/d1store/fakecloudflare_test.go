@@ -161,6 +161,9 @@ func (f *fakeCloudflare) exec(sql string, params []string) ([]map[string]any, in
 			changes = 1
 		}
 		return nil, changes, 0, nil
+	case strings.HasPrefix(s, "INSERT OR IGNORE INTO sessions(id, title, sub_enabled"):
+		f.ensureSession(params[0], params[1])
+		return nil, 0, 0, nil
 	case strings.HasPrefix(s, "INSERT OR IGNORE INTO sessions(id, title, created_at"):
 		f.ensureSession(params[0], params[1])
 		return nil, 0, 0, nil
@@ -324,6 +327,9 @@ func (f *fakeCloudflare) exec(sql string, params []string) ([]map[string]any, in
 func sessionRow(id, title, model string) map[string]any {
 	return map[string]any{
 		"id": id, "title": title, "provider": "", "model": model,
+		// -1 is the "not set" state a real row starts in, so a fresh session
+		// follows the agent's global sub-agent instead of reading as off.
+		"sub_provider": "", "sub_model": "", "sub_enabled": -1,
 		"created_at": 1, "updated_at": 1,
 	}
 }

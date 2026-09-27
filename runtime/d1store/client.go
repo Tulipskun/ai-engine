@@ -423,15 +423,17 @@ func (c *Client) DeleteState(ctx context.Context, key string) error {
 
 // Session is one row of the history table the phone renders.
 type Session struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	SubProvider  string `json:"sub_provider"`
-	SubModel     string `json:"sub_model"`
-	SubEnabled   int    `json:"sub_enabled"` // -1 = unset (follow global), 0 = off, 1 = on
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	SubProvider string `json:"sub_provider"`
+	SubModel    string `json:"sub_model"`
+	// SubEnabled is -1 when the session does not override the agent's global
+	// sub-agent switch, 0 off, 1 on.
+	SubEnabled int   `json:"sub_enabled"`
+	CreatedAt  int64 `json:"created_at"`
+	UpdatedAt  int64 `json:"updated_at"`
 }
 
 // Turn is one history row, ordered by seq within a session.
@@ -542,19 +544,27 @@ func (c *Client) RenameSession(ctx context.Context, id, title string) (Session, 
 // SetSessionSubAgent stores the per-session sub-agent override. Empty fields
 // clear the pin so the session follows the global agent defaults again.
 // subEnabled == nil leaves the stored flag untouched.
-func (c *Client) SetSessionSubAgent(ctx context.Context, sessionID, subProvider, subModel string, subEnabled *bool) error {
+// SetSessionSubAgent stores the per-session sub-agent override. writeRoute is
+// false for a request that only flips subEnabled: the route columns then keep
+// whatever the session already had (an empty route means "use the agent's
+// global sub-agent"), so enabling the sub-agent does not erase a stored route.
+func (c *Client) SetSessionSubAgent(ctx context.Context, sessionID, subProvider, subModel string, subEnabled *bool, writeRoute bool) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return errors.New("d1store: session id is required")
 	}
 	if _, err := c.query(ctx,
-		"INSERT OR IGNORE INTO sessions(id, title, created_at, updated_at) VALUES(?, ?, unixepoch(), unixepoch())",
+		"INSERT OR IGNORE INTO sessions(id, title, sub_enabled, created_at, updated_at) VALUES(?, ?, -1, unixepoch(), unixepoch())",
 		[]string{sessionID, sessionID}); err != nil {
 		return err
 	}
-	if _, err := c.query(ctx,
-		"UPDATE sessions SET sub_provider = ?, sub_model = ?, updated_at = unixepoch() WHERE id = ?",
-		[]string{subProvider, subModel, sessionID}); err != nil {
-		return err
+	if writeRoute {
+		if _, err := c.query(ctx,
+			"UPDATE sessions SET sub_provider = ?, sub_model = ?, updated_at = unixepoch() WHERE id = ?",
+			[]string{subProvider, subModel, sessionID}); err != nil {
+			return err
+		}
+	} else if subEnabled == nil {
+		return nil
 	}
 	if subEnabled != nil {
 		enabled := 0
@@ -578,7 +588,7 @@ func (c *Client) SetSessionRoute(ctx context.Context, sessionID, provider, model
 		return errors.New("d1store: session id is required")
 	}
 	if _, err := c.query(ctx,
-		"INSERT OR IGNORE INTO sessions(id, title, created_at, updated_at) VALUES(?, ?, unixepoch(), unixepoch())",
+		"INSERT OR IGNORE INTO sessions(id, title, sub_enabled, created_at, updated_at) VALUES(?, ?, -1, unixepoch(), unixepoch())",
 		[]string{sessionID, sessionID}); err != nil {
 		return err
 	}
@@ -664,7 +674,7 @@ func (c *Client) appendTurn(ctx context.Context, sessionID, role, agent, jobID, 
 		return 0, errors.New("d1store: session id is required")
 	}
 	if _, err := c.query(ctx,
-		"INSERT OR IGNORE INTO sessions(id, title, created_at, updated_at) VALUES(?, ?, unixepoch(), unixepoch())",
+		"INSERT OR IGNORE INTO sessions(id, title, sub_enabled, created_at, updated_at) VALUES(?, ?, -1, unixepoch(), unixepoch())",
 		[]string{sessionID, sessionID}); err != nil {
 		return 0, err
 	}
@@ -786,6 +796,73 @@ var turnFooterColumns = []struct{ name, ddl string }{
 	{"cache_read_tokens", "ALTER TABLE turns ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0"},
 	{"cache_write_tokens", "ALTER TABLE turns ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0"},
 	{"duration_ms", "ALTER TABLE turns ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"},
+}
+
+// subAgentColumns are the per-session sub-agent columns (CHANGE-085). The
+// default is -1, "not set", so a row that predates them, or a fresh one, falls
+// back to the agent's global sub-agent instead of reading as disabled.
+var subAgentColumns = []struct{ name, ddl string }{
+	{"sub_provider", "ALTER TABLE sessions ADD COLUMN sub_provider TEXT NOT NULL DEFAULT ''"},
+	{"sub_model", "ALTER TABLE sessions ADD COLUMN sub_model TEXT NOT NULL DEFAULT ''"},
+	{"sub_enabled", "ALTER TABLE sessions ADD COLUMN sub_enabled INTEGER NOT NULL DEFAULT -1"},
+}
+
+// EnsureSubAgentColumns adds the per-session sub-agent columns when they are
+// missing, and repairs a column an earlier manual migration created with a
+// default that reads as "off": sub_enabled is a three-state value, so an empty
+// text default would fail the int scan. It runs once, next to
+// EnsureTurnFooter, after the token that reaches the database is verified.
+func (c *Client) EnsureSubAgentColumns(ctx context.Context) error {
+	if c == nil {
+		return errors.New("d1store: client is not configured")
+	}
+	have := map[string]string{}
+	res, err := c.query(ctx, "PRAGMA table_info(sessions)", nil)
+	if err != nil {
+		return err
+	}
+	rows, err := queryInto[struct {
+		Name         string `json:"name"`
+		DefaultValue string `json:"dflt_value"`
+	}](res.rows)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		have[row.Name] = row.DefaultValue
+	}
+	for _, column := range subAgentColumns {
+		if _, ok := have[column.name]; !ok {
+			if _, err := c.query(ctx, column.ddl, nil); err != nil {
+				return fmt.Errorf("d1store: add sessions.%s: %w", column.name, err)
+			}
+			continue
+		}
+		// Present but with a default that cannot be read as the three-state
+		// value: normalise the stored rows and rebuild the column default.
+		if column.name == "sub_enabled" && !isNumericSQLDefault(have[column.name]) {
+			if _, err := c.query(ctx, "UPDATE sessions SET sub_enabled = -1 WHERE sub_enabled IS NULL OR CAST(sub_enabled AS TEXT) = ''", nil); err != nil {
+				return fmt.Errorf("d1store: normalise sessions.sub_enabled: %w", err)
+			}
+			if _, err := c.query(ctx, "UPDATE sessions SET sub_enabled = -1 WHERE sub_enabled > 1 OR sub_enabled < -1", nil); err != nil {
+				return fmt.Errorf("d1store: clamp sessions.sub_enabled: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// isNumericSQLDefault reports whether a D1 dflt_value literal is an integer, so
+// a column default of -1/0/1 is left alone and anything else is repaired.
+func isNumericSQLDefault(value string) bool {
+	value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "'"))
+	if value == "" {
+		return false
+	}
+	if _, err := strconv.Atoi(value); err != nil {
+		return false
+	}
+	return true
 }
 
 // EnsureTurnFooter adds the footer columns when they are missing. The daemon

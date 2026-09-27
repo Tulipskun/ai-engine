@@ -1191,3 +1191,16 @@ Reason: ผู้ใช้ตัดสินใจให้ลดพื้นผ
 Impact: tools/registry.go, tools/files.go, tools/command.go (คงไว้), ลบ tools/{browser_client,browser_attach,browser_tools,attachments,attachments_pdf,os_input,jobs,web_fetch,network_policy}.go + เทสต์ทั้งหมด, runtime/{browser_config,attachment_config}.go + เทสต์, runtime/filestore/ (ทั้งแพ็กเกจ), runtime/runtime.go, runtime/system_config.go (ย้าย `dirOf`), runtime/d1store/sync.go, sdk/outbound_attachments.go, sdk/loop.go, sdk/plan_tool.go, sdk/loop_control.go, sdk/subagent.go, cmd/ai-engine/main.go, ลบ cmd/ai-engine/attachments.go + เทสต์, เทสต์ที่อ้างชื่อ tool เก่า, .config/{browser,attachment}.example.json, index.md, README.md, requirements/{functional,constraints,product,loop-control}.md
 Validation: `go build ./...`; `go vet ./...`; `go test ./... -count=1` ผ่านทั้ง 12 package; วัดสดกับ Zen ก่อนหลังด้วย payload ที่จับจริงจาก adapter (`muse-spark-1.2-contributor-free` และ `muse-spark-1.3-contributor-free` ตอบ 200 เมื่อส่งเพียง `bash` + `read`)
 Status: accepted
+
+CHANGE-088
+
+Date: 2026-09-27
+Type: fix
+Request: "แก้ไขทั้งหมดให้เรียบร้อย" — ตรวจงานจริงบนเครื่องหลัง CHANGE-087 แล้วเจอว่า per-session sub-agent (CHANGE-085) ใช้งานไม่ได้จริง
+Conflict: REQ-048(4)/(5) session PATCH เดิมตั้ง main route เสมอ และไม่ตรวจ sub route; REQ-029 (`sub` = worker ต้องมี execution tools) ทำให้ worker เป็นทางเดียวที่ `bash` จะได้ถูกใช้
+Previous: `SetSessionModel` เขียน `SetSessionRoute("", "")` ทุกครั้งที่ request ไม่ได้ส่ง main provider/model → การบันทึกค่า sub agent ล้าง main pin ของ session โดยเงียบ; request ที่ส่งมาแค่ sub_enabled (เปิด sub agent โดยใช้ค่าของ agent) ถูก early-return จึงไม่บันทึกอะไรเลย; sub provider/model ไม่ผ่าน router validation; `SetSessionSubAgent` เขียน route columns เสมอ แม้ request ไม่ได้ส่ง route; คอลัมน์ `sub_*` ใน D1 ไม่มี migration ในโค้ด (ทำเองนอกระบบ) และ `sub_enabled` ถูกสร้างด้วย default เป็น text ว่าง ซึ่งอ่านเป็น int ไม่ได้
+New: ตัดสกัด `sessionRouteChange` เป็นฟังก์ชันบริสุทธิ์ที่คืนว่า main route เปลี่ยนหรือไม่ — sub-only request ไม่แตะ main pin; sub route ต้องผ่าน `router.Resolve` และต้องครบ provider+model; `SetSessionSubAgent` รับ `writeRoute` เพื่อไม่ล้าง route เดิมเมื่อเปลี่ยนแค่ flag; `EnsureSubAgentColumns` เติมคอลัมน์ที่ขาดและซ่อมค่าที่อ่านไม่ได้ (default เป็น -1) พร้อมเรียกครั้งเดียวใน `Hydrate`; ทุก INSERT ตั้ง `sub_enabled = -1` เองแทนที่จะพึ่ง default ของตาราง
+Reason: ทดสอบจริงบนเครื่องหลัง deploy — planner บอกว่าไม่มี `delegate_to_subagent` เพราะเปิด sub agent ไม่ได้ และแม้เปิดได้การบันทึกก็จะทำให้ main pin หาย ซึ่งเป็นการทำงานผิดที่ไม่มี test ครอบ
+Impact: cmd/ai-engine/mobile.go (SetSessionModel + sessionRouteChange + Hydrate), runtime/d1store/client.go (SetSessionSubAgent signature, EnsureSubAgentColumns, INSERT), runtime/d1store fake + tests, cmd/ai-engine/mobile_session_model_test.go (ใหม่)
+Validation: `go build ./...`; `go vet ./...`; `go test ./... -count=1` ผ่านทั้ง 12 package รวมถึงเทสต์ที่ยืนยันว่า sub-only/flag-only/clear-sub ไม่แตะ main pin และ flag-only ไม่ล้าง sub route
+Status: accepted

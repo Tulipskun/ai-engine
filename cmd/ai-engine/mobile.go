@@ -179,41 +179,38 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		}
 		return m.sessionRow(ctx, sessionID)
 	}
-	provider := sdk.ProviderID(choice.Provider)
-	model := choice.Model
-	if model == "" && provider == "" && !choice.ClearSub {
-		return m.sessionRow(ctx, sessionID)
-	}
-	if provider == "" || model == "" {
-		// One side only: fill the other from the router so a phone can send just
-		// the model, or just the provider, without guessing.
-		if provider == "" {
-			for _, id := range m.router.ProviderIDs() {
-				if hasModel(m.router, id, model) {
-					provider = id
-					break
-				}
-			}
-		} else if models := m.router.Models(provider); len(models) > 0 {
-			model = models[0].ID
-		}
-	}
-	if (provider != "" || model != "") && (provider == "" || model == "") {
-		return mobiletransport.SessionRow{}, fmt.Errorf("provider %q has no model %q", choice.Provider, choice.Model)
-	}
-	if provider != "" && model != "" {
-		if _, err := m.router.Resolve(provider, model); err != nil {
-			return mobiletransport.SessionRow{}, fmt.Errorf("%s/%s is not available: %w", provider, model, err)
-		}
-	}
-	if err := m.client.SetSessionRoute(ctx, sessionID, string(provider), model); err != nil {
+	mainChanged, provider, model, err := sessionRouteChange(choice, m.router)
+	if err != nil {
 		return mobiletransport.SessionRow{}, err
 	}
+	subProvider := strings.TrimSpace(choice.SubProvider)
+	subModel := strings.TrimSpace(choice.SubModel)
 	subEnabled := choice.SubEnabled
 	if choice.ClearSub {
 		subEnabled = nil
 	}
-	if err := m.client.SetSessionSubAgent(ctx, sessionID, choice.SubProvider, choice.SubModel, subEnabled); err != nil {
+	// A sub route must resolve like a main route, otherwise the worker would
+	// start a turn with a route that cannot run.
+	subRouteChanged := subProvider != "" || subModel != "" || choice.ClearSub
+	switch {
+	case subProvider != "" && subModel != "":
+		if _, err := m.router.Resolve(sdk.ProviderID(subProvider), subModel); err != nil {
+			return mobiletransport.SessionRow{}, fmt.Errorf("sub agent %s/%s is not available: %w", subProvider, subModel, err)
+		}
+	case subProvider != "" || subModel != "":
+		return mobiletransport.SessionRow{}, fmt.Errorf("sub agent %q has no model %q", subProvider, subModel)
+	}
+	if !mainChanged && !subRouteChanged && subEnabled == nil {
+		// Nothing in this request targets the session: neither the main route
+		// nor the sub-agent. Report the row instead of rewriting the pins.
+		return m.sessionRow(ctx, sessionID)
+	}
+	if mainChanged {
+		if err := m.client.SetSessionRoute(ctx, sessionID, string(provider), model); err != nil {
+			return mobiletransport.SessionRow{}, err
+		}
+	}
+	if err := m.client.SetSessionSubAgent(ctx, sessionID, subProvider, subModel, subEnabled, subRouteChanged); err != nil {
 		return mobiletransport.SessionRow{}, err
 	}
 	row, err := m.sessionRow(ctx, sessionID)
@@ -279,6 +276,40 @@ func (m modelStore) ResolveAgentConfig(ctx context.Context, sessionID string) (m
 		cfg.SubEnabled = global.SubEnabled
 	}
 	return cfg, nil
+}
+
+// sessionRouteChange decides what a ModelChoice request does to the main route.
+// mainChanged is false for a sub-agent-only request, which is what keeps a
+// session's main pin alive when the phone saves sub-agent settings; the router
+// fills in the missing half of a half-specified route and rejects a route that
+// cannot run. A request with no main fields at all leaves the pin untouched.
+func sessionRouteChange(choice mobiletransport.ModelChoice, router *sdk.Router) (bool, sdk.ProviderID, string, error) {
+	provider := sdk.ProviderID(choice.Provider)
+	model := choice.Model
+	if provider == "" && model == "" {
+		return false, "", "", nil
+	}
+	if provider == "" || model == "" {
+		// One side only: fill the other from the router so a phone can send just
+		// the model, or just the provider, without guessing.
+		if provider == "" {
+			for _, id := range router.ProviderIDs() {
+				if hasModel(router, id, model) {
+					provider = id
+					break
+				}
+			}
+		} else if models := router.Models(provider); len(models) > 0 {
+			model = models[0].ID
+		}
+	}
+	if provider == "" || model == "" {
+		return false, "", "", fmt.Errorf("provider %q has no model %q", choice.Provider, choice.Model)
+	}
+	if _, err := router.Resolve(provider, model); err != nil {
+		return false, "", "", fmt.Errorf("%s/%s is not available: %w", provider, model, err)
+	}
+	return true, provider, model, nil
 }
 
 func (m modelStore) sessionRow(ctx context.Context, sessionID string) (mobiletransport.SessionRow, error) {
@@ -417,6 +448,11 @@ func (m *mobileRuntime) Hydrate(ctx context.Context) error {
 	// it needs have to be there before the first phone turn (AX-095).
 	if err := m.client.EnsureTurnFooter(ctx); err != nil {
 		log.Printf("mobile: prepare turns for the message footer: %v", err)
+	}
+	// The per-session sub-agent columns are read on every session row, so they
+	// have to exist before the first turn (CHANGE-085, CHANGE-088).
+	if err := m.client.EnsureSubAgentColumns(ctx); err != nil {
+		log.Printf("mobile: prepare sessions for per-session sub-agent settings: %v", err)
 	}
 	if m.cfg.syncConfig {
 		report, err := m.client.HydrateConfig(ctx, d1store.DefaultConfigFiles(m.stateRoot))

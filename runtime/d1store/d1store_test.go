@@ -470,7 +470,7 @@ func TestSetSessionSubAgentRoundTrip(t *testing.T) {
 	if err := client.SetSessionRoute(ctx, "chat-1", "Opencode", "mimo-v2.5-free"); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.SetSessionSubAgent(ctx, "chat-1", "AgentRouter", "mimo-v2.5-free", boolPtr(true)); err != nil {
+	if err := client.SetSessionSubAgent(ctx, "chat-1", "AgentRouter", "mimo-v2.5-free", boolPtr(true), true); err != nil {
 		t.Fatal(err)
 	}
 	row, found, err := client.GetSession(ctx, "chat-1")
@@ -481,7 +481,21 @@ func TestSetSessionSubAgentRoundTrip(t *testing.T) {
 		t.Fatalf("sub = %s/%s/%d, want AgentRouter/mimo-v2.5-free/1", row.SubProvider, row.SubModel, row.SubEnabled)
 	}
 
-	if err := client.SetSessionSubAgent(ctx, "chat-1", "", "", boolPtr(false)); err != nil {
+	// Turning the flag off without a route must keep the stored route: the
+	// session falls back to the agent's global sub-agent only when the route
+	// is empty, and the flag is the per-session switch on top of it.
+	if err := client.SetSessionSubAgent(ctx, "chat-1", "", "", boolPtr(false), false); err != nil {
+		t.Fatal(err)
+	}
+	row, _, err = client.GetSession(ctx, "chat-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.SubProvider != "AgentRouter" || row.SubModel != "mimo-v2.5-free" || row.SubEnabled != 0 {
+		t.Fatalf("flag-only sub = %s/%s/%d, want the route kept and 0", row.SubProvider, row.SubModel, row.SubEnabled)
+	}
+
+	if err := client.SetSessionSubAgent(ctx, "chat-1", "", "", boolPtr(false), true); err != nil {
 		t.Fatal(err)
 	}
 	row, _, err = client.GetSession(ctx, "chat-1")
