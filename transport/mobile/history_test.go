@@ -228,6 +228,7 @@ type fakeModels struct {
 	providers []ProviderView
 	choices   map[string]ModelChoice
 }
+
 func (f *fakeModels) Providers(context.Context) ([]ProviderView, error) { return f.providers, nil }
 
 func (f *fakeModels) SetSessionModel(_ context.Context, sessionID string, choice ModelChoice) (SessionRow, error) {
@@ -292,6 +293,39 @@ func TestModelsEndpointListsTheCatalogue(t *testing.T) {
 		t.Fatalf("providers = %+v", page.Providers)
 	}
 }
+
+// The phone reads this before it shows the per-chat agent sheet, so a missing
+// GET left the sheet unable to say whether the chat is pinned or following the
+// agent defaults.
+func TestGettingASessionReturnsItsEffectiveAgentConfig(t *testing.T) {
+	store := newFakeHistory()
+	store.sessions["work-1"] = SessionRow{ID: "work-1", Title: "เดิม"}
+	models := &fakeModels{choices: map[string]ModelChoice{
+		"work-1": {SubProvider: "NousResearch", SubModel: "deepseek-v3", SubEnabled: boolOf(false)},
+	}}
+	cache := &ramCache{}
+	cache.Adopt("cf-token")
+	handler := NewHistoryHandler(store, NewGate(GateConfig{Verify: allowVerifier{}, Cache: cache}), models)
+
+	rec := historyRequest(t, handler, http.MethodGet, "/api/sessions/work-1", "cf-token", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET agent config = %d: %s", rec.Code, rec.Body)
+	}
+	var cfg SessionAgentConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SubProvider != "NousResearch" || cfg.SubModel != "deepseek-v3" || cfg.SubEnabled {
+		t.Fatalf("sub config = %+v, want the session pin with the sub agent off", cfg)
+	}
+	// A chat with no pin still answers, so the sheet can show the agent values.
+	rec = historyRequest(t, handler, http.MethodGet, "/api/sessions/other", "cf-token", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET unpinned = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func boolOf(v bool) *bool { return &v }
 
 func TestPatchingASessionSetsTheProviderAndModel(t *testing.T) {
 	store := newFakeHistory()

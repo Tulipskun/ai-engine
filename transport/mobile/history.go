@@ -68,9 +68,9 @@ type ProviderView struct {
 // each chat may pin its own sub provider/model instead of inheriting the
 // global agent defaults.
 type ModelChoice struct {
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Clear    bool   `json:"clear_model,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Clear       bool   `json:"clear_model,omitempty"`
 	SubProvider string `json:"sub_provider,omitempty"`
 	SubModel    string `json:"sub_model,omitempty"`
 	SubEnabled  *bool  `json:"sub_enabled,omitempty"`
@@ -254,6 +254,16 @@ func serveSessionItem(w http.ResponseWriter, r *http.Request, store HistoryStore
 	}
 	id := parts[0]
 	switch r.Method {
+	case http.MethodGet:
+		// The phone opens the per-chat agent sheet and needs the effective
+		// config first: the session pin when it has one, otherwise the agent's
+		// global defaults, so the sheet can say which of the two it is showing.
+		cfg, err := models.ResolveAgentConfig(r.Context(), id)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, cfg)
 	case http.MethodPatch:
 		var body struct {
 			Title       string `json:"title"`
