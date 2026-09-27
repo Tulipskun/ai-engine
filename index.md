@@ -16,6 +16,7 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 ├── cmd/ai-engine/            daemon entry + agent/registry construction (single gateway)
 ├── cmd/demo/          throwaway provider-smoke prototype (not shipped)
 ├── sdk/               provider-neutral Agent runtime, sessions, orchestration
+│   └── providers/jev/  auxiliary System One guard for bash tool calls
 ├── tools/             worker execution tools: read + bash only
 ├── runtime/           config load, session manager, provider wiring
 ├── transport/         mobile transport only (display only, no core logic)
