@@ -122,7 +122,7 @@ func chooseWithLocalJev(ctx context.Context, client *http.Client, endpoint, mode
 	if err != nil { return "", 0, err }
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
-	if err != nil { return "", 0, fmt.Errorf("screen_control: local JEV unavailable at "+endpoint) }
+	if err != nil { return "", 0, fmt.Errorf("screen_control: local JEV unavailable at %s", endpoint) }
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return "", 0, fmt.Errorf("screen_control: local JEV HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))) }
