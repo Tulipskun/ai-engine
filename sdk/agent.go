@@ -300,7 +300,7 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 				} else { session.Append(Turn{Role: RoleToolResult, ToolResult: &result}) }
 				continue
 			}
-			if allowed, guardErr := a.allowTool(ctx, session, callCopy); guardErr != nil {
+			if allowed, guardErr := a.allowTool(ctx, session, *callCopy); guardErr != nil {
 				return Response{}, guardErr
 			} else if !allowed {
 				result := ToolResult{ID: call.ID, Content: "JEV guard denied this tool call as outside the permitted scope.", IsError: true}
