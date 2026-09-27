@@ -284,7 +284,10 @@ func serveSessionItem(w http.ResponseWriter, r *http.Request, store HistoryStore
 			SubProvider: strings.TrimSpace(body.SubProvider), SubModel: strings.TrimSpace(body.SubModel),
 			SubEnabled: body.SubEnabled, ClearSub: body.ClearSub,
 		}
-		if models != nil && (body.ClearModel || choice.Provider != "" || choice.Model != "") {
+		// A sub-agent-only save is a real change: it carries no main route at
+		// all, and letting it fall through would answer "title required".
+		if models != nil && (body.ClearModel || choice.Provider != "" || choice.Model != "" ||
+			choice.SubProvider != "" || choice.SubModel != "" || choice.SubEnabled != nil || choice.ClearSub) {
 			row, err := models.SetSessionModel(r.Context(), id, choice)
 			if err != nil {
 				writeModelError(w, err)

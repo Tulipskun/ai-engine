@@ -353,6 +353,37 @@ func TestPatchingASessionSetsTheProviderAndModel(t *testing.T) {
 	}
 }
 
+// The sub-agent block sends no main route, so the handler has to recognise a
+// sub-only body as a change instead of falling through to the title branch.
+func TestPatchingASessionWithOnlySubAgentFields(t *testing.T) {
+	store := newFakeHistory()
+	store.sessions["work-1"] = SessionRow{ID: "work-1", Title: "เดิม"}
+	models := &fakeModels{}
+	cache := &ramCache{}
+	cache.Adopt("cf-token")
+	handler := NewHistoryHandler(store, NewGate(GateConfig{Verify: allowVerifier{}, Cache: cache}), models)
+
+	rec := historyRequest(t, handler, http.MethodPatch, "/api/sessions/work-1", "cf-token",
+		`{"provider":"","model":"","clear_model":false,"sub_provider":"","sub_model":"","sub_enabled":true,"clear_sub":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH sub-only = %d: %s", rec.Code, rec.Body)
+	}
+	got := models.choices["work-1"]
+	if got.SubEnabled == nil {
+		t.Fatalf("stored sub choice = %+v, want a sub_enabled flag", got)
+	}
+	if !*got.SubEnabled {
+		t.Fatalf("stored sub_enabled = %v, want true", *got.SubEnabled)
+	}
+	if got.Provider != "" || got.Model != "" {
+		t.Fatalf("a sub-only save must not carry a main route: %+v", got)
+	}
+	if rec := historyRequest(t, handler, http.MethodPatch, "/api/sessions/work-1", "cf-token",
+		`{"sub_provider":"","sub_model":"","clear_sub":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("PATCH clear sub = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestPatchingASessionCanClearItsModelPin(t *testing.T) {
 	store := newFakeHistory()
 	store.sessions["work-2"] = SessionRow{ID: "work-2", Title: "เดิม"}
