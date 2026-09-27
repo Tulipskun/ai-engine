@@ -202,13 +202,6 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 	if output.Metadata == nil {
 		output.Metadata = map[string]string{}
 	}
-	if drained := TakeOutboundAttachmentIDs(session.ID()); drained != "" {
-		output.Metadata[OutAttachmentIDsKey] = MergeOutboundAttachmentIDs(output.Metadata[OutAttachmentIDsKey], drained)
-	} else if session.ID() != input.SessionID {
-		if drained := TakeOutboundAttachmentIDs(input.SessionID); drained != "" {
-			output.Metadata[OutAttachmentIDsKey] = MergeOutboundAttachmentIDs(output.Metadata[OutAttachmentIDsKey], drained)
-		}
-	}
 	output.Metadata["trace_actor"] = "main"
 	for _, display := range h.Displays {
 		DispatchDisplay(ctx, display, output, h.DisplayTimeout)

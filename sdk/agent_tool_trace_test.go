@@ -16,7 +16,7 @@ func (p *normalToolTraceProvider) Name() string { return "normal-tool-trace" }
 func (p *normalToolTraceProvider) Generate(_ context.Context, req Request) (Response, error) {
 	p.calls++
 	if p.calls == 1 {
-		return Response{ToolCalls: []ToolCall{{ID: "call-1", Name: "read_file", Arguments: `{"path":"/tmp/example.txt"}`}}}, nil
+		return Response{ToolCalls: []ToolCall{{ID: "call-1", Name: "read", Arguments: `{"path":"/tmp/example.txt"}`}}}, nil
 	}
 	for _, turn := range req.Messages {
 		if turn.Role == RoleToolResult && turn.ToolResult != nil && turn.ToolResult.ID == "call-1" {
@@ -38,7 +38,7 @@ func (p *normalToolTraceProvider) WithAPIKey(string) Provider { return p }
 func TestAgentNormalGenerateToolTraceLoop(t *testing.T) {
 	provider := &normalToolTraceProvider{}
 	client, session := newAgentTestSession(provider)
-	tools := &agentTestTools{definitions: []Tool{{Name: "read_file"}}}
+	tools := &agentTestTools{definitions: []Tool{{Name: "read"}}}
 	agent := &Agent{Client: client, Tools: tools, MaxRetries: 0, DisablePlanning: true}
 
 	var toolCalls []string
@@ -61,10 +61,10 @@ func TestAgentNormalGenerateToolTraceLoop(t *testing.T) {
 	if provider.calls != 2 || !provider.seenToolResult {
 		t.Fatalf("provider loop calls=%d seenToolResult=%v", provider.calls, provider.seenToolResult)
 	}
-	if len(toolCalls) != 1 || toolCalls[0] != "read_file" {
+	if len(toolCalls) != 1 || toolCalls[0] != "read" {
 		t.Fatalf("tool call trace=%v", toolCalls)
 	}
-	if len(toolResults) != 1 || toolResults[0] != "read_file" {
+	if len(toolResults) != 1 || toolResults[0] != "read" {
 		t.Fatalf("tool result trace=%v", toolResults)
 	}
 }

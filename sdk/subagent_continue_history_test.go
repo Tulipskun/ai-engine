@@ -17,7 +17,7 @@ func (p *toolUsingProvider) Generate(_ context.Context, req Request) (Response, 
 	defer p.mu.Unlock()
 	p.requests = append(p.requests, req)
 	if len(p.requests) == 1 {
-		return Response{ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.txt"}`}}}, nil
+		return Response{ToolCalls: []ToolCall{{ID: "c1", Name: "read", Arguments: `{"path":"a.txt"}`}}}, nil
 	}
 	return Response{Content: []ContentPart{{Type: ContentText, Text: "worker done after tool"}}}, nil
 }
@@ -29,7 +29,7 @@ func TestSubAgentFinalReportShowsToolsArgsAndResults(t *testing.T) {
 	}
 	event := awaitReport(t, events, "final")
 	report := event.Report
-	for _, want := range []string{"read_file", `{"path":"a.txt"}`, "tools_used:", "worker done after tool", "task: use tools"} {
+	for _, want := range []string{"read", `{"path":"a.txt"}`, "tools_used:", "worker done after tool", "task: use tools"} {
 		if !strings.Contains(report, want) {
 			t.Fatalf("report missing %q:\n%s", want, report)
 		}

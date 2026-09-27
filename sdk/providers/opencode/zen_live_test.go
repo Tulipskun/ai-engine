@@ -23,8 +23,7 @@ func TestZenFreeModelsLive(t *testing.T) {
 	}
 	client := opencode.New(key)
 	tools := []sdk.Tool{}
-	for _, name := range []string{"read_file", "write_file", "edit_file", "search_files",
-		"list_directory", "web_fetch", "bash", "os_screenshot", "send_attachment"} {
+	for _, name := range []string{"read", "bash"} {
 		tools = append(tools, sdk.Tool{Name: name, Description: "Work on the device.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"a": map[string]any{"type": "string"}}}})

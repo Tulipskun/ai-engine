@@ -13,7 +13,7 @@ import (
 )
 
 // Exercise the CLI's real execution registry through a delegated SDK worker.
-// No network, subprocess, browser or live transport is used.
+// No network, subprocess or live transport is used.
 type roleCaptureProvider struct{ workerRequests chan sdk.Request }
 
 func (p *roleCaptureProvider) Name() string                   { return "test" }
@@ -25,7 +25,7 @@ func (p *roleCaptureProvider) Generate(_ context.Context, req sdk.Request) (sdk.
 	}
 	call := sdk.ToolCall{ID: "delegate", Name: "delegate_to_subagent", Arguments: `{"task":"read fixture.txt and report its contents"}`}
 	if worker {
-		call = sdk.ToolCall{ID: "read", Name: "read_file", Arguments: `{"path":"fixture.txt"}`}
+		call = sdk.ToolCall{ID: "read", Name: "read", Arguments: `{"path":"fixture.txt"}`}
 	}
 	for _, turn := range req.Messages {
 		if turn.ToolResult != nil && turn.ToolResult.ID == call.ID {
@@ -56,7 +56,7 @@ func TestDelegatedWorkerRetainsRealToolsAndContext(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(workspace, "requirements"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			requirement := "REQ-TEST — Preserve search_files policy and unrelated project context."
+			requirement := "REQ-TEST — Preserve the read policy and unrelated project context."
 			for path, content := range map[string]string{"requirements/functional.md": requirement, "fixture.txt": "worker read succeeded"} {
 				if err := os.WriteFile(filepath.Join(workspace, path), []byte(content), 0600); err != nil {
 					t.Fatal(err)
@@ -70,18 +70,18 @@ func TestDelegatedWorkerRetainsRealToolsAndContext(t *testing.T) {
 			provider := &roleCaptureProvider{workerRequests: make(chan sdk.Request, 4)}
 			client.RegisterAdapter(sdk.AdapterOpenAI, provider)
 			state := t.TempDir()
-			customPrompt := "Custom worker context. Use read_file to inspect only the assigned file.\nAvailable tools:\nkeep this custom tail"
+			customPrompt := "Custom worker context. Use read to inspect only the assigned file.\nAvailable tools:\nkeep this custom tail"
 			if custom {
 				if err := os.MkdirAll(filepath.Join(state, "config"), 0700); err != nil {
 					t.Fatal(err)
 				}
 				// A custom configured prompt should not be replaced by the SDK default.
-				cfg := `{"sub_agent":{"enabled":true,"SystemPrompt":"Custom worker context. Use read_file to inspect only the assigned file.\nAvailable tools:\nkeep this custom tail"}}`
+				cfg := `{"sub_agent":{"enabled":true,"SystemPrompt":"Custom worker context. Use read to inspect only the assigned file.\nAvailable tools:\nkeep this custom tail"}}`
 				if err := os.WriteFile(filepath.Join(state, "config/system.json"), []byte(cfg), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			agent, err := newAgent(client, workspace, nil, false, filepath.Join(state, "data/jobs.json"), nil)
+			agent, err := newAgent(client, workspace, state)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,8 +130,9 @@ func TestDelegatedWorkerRetainsRealToolsAndContext(t *testing.T) {
 				if !reflect.DeepEqual(req.Tools, agent.Tools.Definitions()) {
 					t.Fatalf("worker definitions differ from real registry: %+v", req.Tools)
 				}
-				if len(req.Tools) < 10 {
-					t.Fatalf("expected real execution registry, got %d tools", len(req.Tools))
+				// CHANGE-087: read and bash are the whole execution registry.
+				if len(req.Tools) != 2 {
+					t.Fatalf("expected the real execution registry, got %d tools", len(req.Tools))
 				}
 				for _, tool := range req.Tools {
 					switch tool.Name {

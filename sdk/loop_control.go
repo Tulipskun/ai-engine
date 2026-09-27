@@ -15,11 +15,10 @@ const (
 	// this cap stops that class of runaway well before that point while
 	// leaving ordinary turns (single-digit calls) untouched.
 	LoopControlMaxToolCallsPerTurn = 30
-	// LoopControlMaxConsecutiveReadEdit caps consecutive read/edit-probe
-	// calls (read_file, read_files, list_directory, search_files,
-	// edit_file) without an intervening progress tool (write_file, bash,
-	// or anything else). Repeated read/edit cycles with no progress are
-	// the classic stall signature.
+	// LoopControlMaxConsecutiveReadEdit caps consecutive read calls without
+	// an intervening progress tool (bash, or anything else). CHANGE-087: read
+	// is the only remaining probe tool, so eight reads in a row is the stall
+	// signature it catches.
 	LoopControlMaxConsecutiveReadEdit = 8
 	// LoopControlMaxBashOutputBytes caps a single bash tool result payload.
 	// It mirrors the tools/command.go truncation budget (1 MiB) so the
@@ -41,7 +40,7 @@ type loopControlTracker struct {
 
 func isLoopControlReadEditTool(name string) bool {
 	switch name {
-	case "read_file", "read_files", "list_directory", "search_files", "edit_file":
+	case "read":
 		return true
 	default:
 		return false
@@ -74,7 +73,7 @@ func (t *loopControlTracker) noteCall(name string) error {
 // noteResult enforces the per-result bash output cap. Non-bash tools and
 // payloads under the limit are untouched.
 func (t *loopControlTracker) noteResult(name string, result ToolResult) error {
-	if len(result.Content) > LoopControlMaxBashOutputBytes && (name == "bash" || name == "run_command") {
+	if len(result.Content) > LoopControlMaxBashOutputBytes && name == "bash" {
 		return fmt.Errorf("%w: %d bytes (max %d); narrow the command, redirect to a file, or page the output",
 			ErrLoopControlBashOutputTooLarge, len(result.Content), LoopControlMaxBashOutputBytes)
 	}

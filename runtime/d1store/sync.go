@@ -31,8 +31,6 @@ func DefaultConfigFiles(stateRoot string) []ConfigFile {
 	return []ConfigFile{
 		{Key: "config:provider", Path: join("provider.json")},
 		{Key: "config:system", Path: join("system.json")},
-		{Key: "config:attachment", Path: join("attachment.json")},
-		{Key: "config:browser", Path: join("browser.json")},
 	}
 }
 

@@ -17,38 +17,12 @@ func TestRegistryDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defs := r.Definitions()
-	if len(defs) != 25 {
+	// CHANGE-087: read and bash are the whole surface.
+	if len(defs) != 2 {
 		t.Fatalf("definitions=%d", len(defs))
 	}
-	seen := map[string]bool{}
-	for _, d := range defs {
-		seen[d.Name] = true
-	}
-	for _, name := range []string{"read_file", "read_files", "write_file", "edit_file", "list_directory", "search_files", "bash", "run_job", "check_job", "close_job", "web_fetch", "list_attachments", "read_attachment", "describe_attachment", "send_attachment", "os_mouse_move", "os_mouse_click", "os_key_press", "os_type_text", "os_screenshot", "os_mouse_drag", "os_mouse_scroll", "os_window_list", "os_window_focus", "os_window_geometry"} {
-		if !seen[name] {
-			t.Fatalf("missing %s", name)
-		}
-	}
-}
-
-func TestRegistryBrowserDefinitions(t *testing.T) {
-	browser := NewBrowserClient(BrowserClientConfig{})
-	r, err := NewRegistryWithBrowser(t.TempDir(), browser, true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defs := r.Definitions()
-	if len(defs) != 38 {
-		t.Fatalf("definitions=%d", len(defs))
-	}
-	seen := map[string]bool{}
-	for _, d := range defs {
-		seen[d.Name] = true
-	}
-	for _, name := range []string{"web_fetch", "browser_list_pages", "browser_attach", "browser_open", "browser_close", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_press", "browser_select", "browser_scroll", "browser_get_text", "browser_screenshot"} {
-		if !seen[name] {
-			t.Fatalf("missing %s", name)
-		}
+	if defs[0].Name != "bash" || defs[1].Name != "read" {
+		t.Fatalf("definitions=%q,%q want bash,read", defs[0].Name, defs[1].Name)
 	}
 }
 
@@ -103,13 +77,13 @@ func TestWorkspaceResolverIsolatesSessionRoots(t *testing.T) {
 		ctx := sdk.WithSessionID(context.Background(), sessionID)
 		return r.Execute(ctx, sdk.ToolCall{ID: "x", Name: name, Arguments: string(raw)})
 	}
-	if result := call("s1", "read_file", map[string]string{"path": "shared.txt"}); result.IsError {
+	if result := call("s1", "read", map[string]string{"path": "shared.txt"}); result.IsError {
 		t.Fatalf("global session lost global file: %s", result.Content)
 	}
-	if result := call("s2", "read_file", map[string]string{"path": "session.txt"}); result.IsError || result.Content != "session file" {
+	if result := call("s2", "read", map[string]string{"path": "session.txt"}); result.IsError || result.Content != "session file" {
 		t.Fatalf("session workspace not applied: %+v", result)
 	}
-	if result := call("s2", "read_file", map[string]string{"path": "shared.txt"}); !result.IsError {
+	if result := call("s2", "read", map[string]string{"path": "shared.txt"}); !result.IsError {
 		t.Fatal("session workspace still sees the global file")
 	}
 	bash := call("s2", "bash", map[string]string{"command": "pwd"})

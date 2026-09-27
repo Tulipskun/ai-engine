@@ -27,11 +27,11 @@ func TestLoopControlReadEditStallFails(t *testing.T) {
 	var tracker loopControlTracker
 	var err error
 	for i := 0; i < LoopControlMaxConsecutiveReadEdit; i++ {
-		if err = tracker.noteCall("read_file"); err != nil {
+		if err = tracker.noteCall("read"); err != nil {
 			t.Fatalf("probe %d under the cap must pass: %v", i+1, err)
 		}
 	}
-	if err = tracker.noteCall("search_files"); !errors.Is(err, ErrLoopControlReadEditStall) {
+	if err = tracker.noteCall("read"); !errors.Is(err, ErrLoopControlReadEditStall) {
 		t.Fatalf("consecutive read/edit over the cap must stall-fail, got: %v", err)
 	}
 	if !isLoopControlFatal(err) {
@@ -42,7 +42,7 @@ func TestLoopControlReadEditStallFails(t *testing.T) {
 func TestLoopControlProgressResetsStall(t *testing.T) {
 	var tracker loopControlTracker
 	for i := 0; i < LoopControlMaxConsecutiveReadEdit; i++ {
-		if err := tracker.noteCall("read_file"); err != nil {
+		if err := tracker.noteCall("read"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -50,7 +50,7 @@ func TestLoopControlProgressResetsStall(t *testing.T) {
 	if err := tracker.noteCall("bash"); err != nil {
 		t.Fatalf("progress tool must reset the stall counter: %v", err)
 	}
-	if err := tracker.noteCall("read_file"); err != nil {
+	if err := tracker.noteCall("read"); err != nil {
 		t.Fatalf("reads after progress must pass: %v", err)
 	}
 }

@@ -10,7 +10,7 @@ CON-004 — Agent ต้องไม่ผูกกับ provider รายใ�
 
 CON-005 — Provider adapter ห้ามแก้ไข shared adapter configuration เมื่อใช้ settings เฉพาะของ session
 
-CON-006 — Browser automation ต้องเป็น Go CDP implementation ที่อยู่ในตัว ห้ามเพิ่ม Playwright หรือ Node.js browser worker
+CON-006 — **ยกเลิก (CHANGE-087)**: browser automation ถูกลบออกทั้งหมด จึงไม่มีข้อกำหนดเรื่อง Go CDP implementation หรือการห้าม Playwright/Node.js browser worker แล้ว
 
 CON-007 — Requirement files ใน repository เป็นแหล่งอ้างอิงหลักของโปรเจคนั้น Chat memory เป็นเพียง context และใช้แทน project specification ไม่ได้
 
@@ -20,7 +20,7 @@ CON-009 — หลีกเลี่ยงการ refactor ที่ไม่�
 
 CON-010 — ห้ามนำเส้นทาง model-call แบบ streaming กลับมาใช้; `Generate` เป็นเส้นทาง model call เพียงเส้นทางเดียว
 
-CON-011 — File store ของ attachment ต้องอยู่ใต้ state root (`~/.local/share/ai/data/attachments/`) เท่านั้น ไม่ใช่ใน repository/working tree และไม่ใช่ session database; ต้องมีขีดจำกัดขนาดต่อไฟล์/ต่อ session พร้อม TTL cleanup; ห้ามเก็บเนื้อหาไฟล์ใน `data/sessions/` (คง CON-002, CON-003) และ path/limit ต้องกำหนดใน `config/*.json` เท่านั้น (คง CON-001)
+CON-011 — **ยกเลิก (CHANGE-087)**: attachment file store ถูกลบทั้งแพ็กเกจ (`runtime/filestore`, `config/attachment.json`, `config:attachment`) CON-002/CON-003 ยังคงบังคับกับ session data และ CON-001 ยังคงบังคับว่า path/limits กำหนดใน `config/*.json` เท่านั้น
 
 CON-012 — Cloudflare D1 เป็น authoritative copy ของ runtime state ได้ แต่ local materialization ต้องคงรูปแบบเดิม: config อ่าน/เขียนเป็น `config/*.json` และหนึ่ง session ยัง map ไปหนึ่ง SQLite file ใต้ `data/sessions/` (คง CON-001, CON-002) — daemon ต้องสามารถรันได้จาก local copy ที่ถูกลบทิ้งทั้งหมด และ D1 ต้องเป็นที่ที่ sync ไป/กลับ ไม่ใช่ที่ที่ core อ่านข้ามไปเรียกเอง; ห้ามสร้าง credential ใหม่เพื่อการ sync (ไม่มี node token, ไม่มี encryption key, ไม่มี per-device token) — Cloudflare API token ที่มือถือส่งมาใน header คือ credential เดียวของระบบ และต้องไม่ถูกเขียนลง config/disk/log; daemon ห้ามตั้งหรือสร้าง secret ของตัวเอง (รวมถึง Worker secret) และไม่ต้องมี Worker เพื่อถึง D1; ห้ามเกินขนาด value ของ D1 (ข้าม + log แทนที่จะ truncate state)
 

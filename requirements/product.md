@@ -9,7 +9,7 @@ with one gateway: a WebSocket published through a Cloudflare quick tunnel
 - Receives canonical `sdk.Input` from the phone and answers with canonical
   `sdk.Output`, including main/sub agent attribution.
 - Runs the Main Agent (planning + delegation) and worker agents with the tool
-  registry (files, shell, jobs, fetch, browser, OS input, attachments).
+  registry, which since CHANGE-087 is exactly `read` and `bash`.
 - Keeps no state of its own: provider keys, system prompt and session history
   live in Cloudflare D1 and are materialized locally on demand (CON-012).
 - Keeps going when the app is closed: a turn already accepted finishes and is

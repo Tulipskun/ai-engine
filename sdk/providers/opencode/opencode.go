@@ -6,12 +6,16 @@
 // Observed in opencode 1.18.31: for providers whose id starts with
 // "opencode" every model request carries x-opencode-session (the opencode
 // session id, e.g. ses_f...), x-opencode-request, x-opencode-client and a
-// User-Agent of the form opencode/<version>. The Zen free tier additionally
-// behaves like an OpenRouter-style gateway: it rejects requests without a
-// session id (MissingSessionID) and rate-limits requests whose User-Agent is
-// not opencode (FreeUsageLimitError), so both headers are required for free
-// models. HTTP-Referer/X-Title mirror what opencode sends to other
-// OpenAI-compatible gateways (openrouter/kilo/llmgateway/nvidia transforms).
+// User-Agent of the form opencode/<version>. Measured against Zen on
+// 2026-09-27, of those only the session id and the User-Agent belong to the
+// free tier's check: dropping x-opencode-client, x-opencode-request or
+// x-opencode-project still serves, and a User-Agent that merely starts with
+// "opencode/" serves. A request without a session id is refused
+// (MissingSessionID) and one whose User-Agent is not opencode is refused
+// (FreeTierError on /responses, FreeUsageLimitError under load), so both
+// headers are required for free models. HTTP-Referer/X-Title mirror what
+// opencode sends to other OpenAI-compatible gateways
+// (openrouter/kilo/llmgateway/nvidia transforms).
 //
 // Only the session id and the gateway attribution headers are reproduced
 // here. Internal opencode ids (request user id, client flags, project id)
@@ -194,33 +198,38 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 }
 
 // The free tier does not only look at headers: it also expects the request to
-// carry the OpenCode client's own tool set. Measured against Zen on
-// 2026-09-25, a request that offers none of the client's tool names is refused
-// with 403 FreeTierError ("can only be used from within OpenCode") no matter
-// how many tools it does offer, while a request carrying the client's names
-// (bash, read, edit, write, glob, grep, webfetch, task, …) is served. So this
-// adapter presents the client's tools and translates the calls that come back
-// to the tools the session actually has.
-var clientToolNames = []string{
-	"bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write",
-}
+// look like a streaming tool-using turn from the client. Measured against Zen
+// on 2026-09-27 with one variable changed per request, a request is served only
+// when all four hold, and misses any of them with 403 FreeTierError ("can only
+// be used from within OpenCode"):
+//
+//  1. stream is true — the same tools with stream false are refused;
+//  2. the tools array names both "bash" and "read" — every other combination is
+//     refused, including one tool alone, any pair without those two (read+grep,
+//     bash+glob, read+edit, skill+todowrite, webfetch+websearch, task+glob),
+//     and every other name (read_files, write_file, edit_file, search_files, …);
+//  3. User-Agent starts with "opencode/" — "curl/8.0" is refused, while the
+//     client's ai-sdk/runtime tags are not required ("opencode/1.18.32" alone
+//     is served);
+//  4. x-opencode-session is present.
+//
+// x-opencode-client, x-opencode-project, x-opencode-request, HTTP-Referer and
+// X-Title are not part of the check. A request with no opencode User-Agent at
+// all never reaches it: Cloudflare answers 403 code 1010 instead.
+//
+// So this adapter presents exactly the two tool names the check requires, using
+// this daemon's own definition for each — the read tool is named "read" for
+// that reason — so nothing needs translating in either direction and the
+// session's tool set never decides whether a request is served. Every other
+// engine tool stays out of this provider's tool surface: a Zen turn reaches the
+// workspace through bash.
+var clientToolNames = []string{"bash", "read"}
 
-// toolAlias maps this daemon's tool names onto the client's, best match first.
+// toolAlias maps the client's tool names onto this daemon's, best match first.
+// Only the two names above can come back, so only they need a mapping.
 var toolAlias = []struct{ client, ours string }{
-	{"read", "read_file"},
-	{"read", "read_files"},
-	{"read", "read_attachment"},
-	{"write", "write_file"},
-	{"edit", "edit_file"},
-	{"grep", "search_files"},
-	{"glob", "list_directory"},
-	{"glob", "list_attachments"},
-	{"webfetch", "web_fetch"},
-	{"websearch", "web_fetch"},
-	{"task", "task"},
+	{"read", "read"},
 	{"bash", "bash"},
-	{"bash", "run_job"},
-	{"skill", "skill"},
 }
 
 // clientTools returns the tool set the OpenCode client would send, using the

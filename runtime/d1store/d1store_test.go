@@ -160,7 +160,7 @@ func TestHydrateKeepsLocalFileWhenD1HasNoCopy(t *testing.T) {
 	fake := newFakeCloudflare("cf-token")
 	client, _ := testClient(t, fake)
 	state := t.TempDir()
-	path := filepath.Join(state, "config", "browser.json")
+	path := filepath.Join(state, "config", "system.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}

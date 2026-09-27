@@ -107,14 +107,6 @@ func run(ctx context.Context) error {
 	sessions := runtime.NewSessionManagerWithProviders(sessionDB, sdk.SessionConfig{Provider: sdk.ProviderID(providerID), Model: modelID}, rt.ProviderConfigs)
 	defer sessions.Close()
 	providerManager := runtime.NewProviderManager(providerConfigPath, rt, providerFile)
-	browserConfig, err := runtime.LoadBrowserConfig(filepath.Join(state, runtime.DefaultBrowserConfigPath))
-	if err != nil {
-		return err
-	}
-	if browserConfig.Enabled {
-		rt.PrepareBrowser(browserConfig, state)
-		defer rt.CloseBrowser()
-	}
 	inputConfigPath := filepath.Join(state, transport.DefaultConfigPath)
 	transportConfig, err := transport.LoadConfig(inputConfigPath)
 	if err != nil {
@@ -123,30 +115,11 @@ func run(ctx context.Context) error {
 	if !transportConfig.Mobile.Enabled {
 		return errors.New("mobile transport is disabled; set mobile.enabled in config/entry.json")
 	}
-	// The attachment file store is opened from config/attachment.json under the
-	// state root (CON-011) and shared by both directions of the file boundary:
-	// the Discord transport writes inbound files into it, and the worker
-	// registry reads references back out of it (REQ-025, REQ-026).
-	attachmentConfig, err := runtime.LoadAttachmentConfig(filepath.Join(state, runtime.DefaultAttachmentConfigPath))
-	if err != nil {
-		return err
-	}
-	attachmentStore, err := attachmentConfig.Open(state)
-	if err != nil {
-		// A store that cannot be opened must not stop the runtime: text turns
-		// keep working and the intake path reports each file as not stored.
-		log.Printf("attachment store unavailable, continuing without file attachments: %v", err)
-		attachmentStore = nil
-	}
-	if attachmentStore != nil {
-		startAttachmentCleanup(ctx, attachmentStore, attachmentCleanupInterval)
-	}
 	workspace, err := resolveWorkspace()
 	if err != nil {
 		return err
 	}
-	jobsPath := filepath.Join(state, "data", "jobs.json")
-	agent, err := newAgentWithWorkspaces(rt.Client, workspace, rt.Browser, browserConfig.AllowPrivate, jobsPath, attachmentToolStore(attachmentStore), func(ctx context.Context) string {
+	agent, err := newAgentWithWorkspaces(rt.Client, workspace, state, func(ctx context.Context) string {
 		return sessions.WorkspaceFor(sdk.SessionIDFromContext(ctx))
 	})
 	if err != nil {
@@ -282,21 +255,19 @@ func turnErrorMessage(err error) string {
 	return msg
 }
 
-func newAgent(client *sdk.RouterClient, workspace string, browser *tools.BrowserClient, allowPrivate bool, jobsPath string, attachments tools.AttachmentStore) (*sdk.Agent, error) {
-	return newAgentWithWorkspaces(client, workspace, browser, allowPrivate, jobsPath, attachments, nil)
+func newAgent(client *sdk.RouterClient, workspace, state string) (*sdk.Agent, error) {
+	return newAgentWithWorkspaces(client, workspace, state, nil)
 }
 
-func newAgentWithWorkspaces(client *sdk.RouterClient, workspace string, browser *tools.BrowserClient, allowPrivate bool, jobsPath string, attachments tools.AttachmentStore, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
-	registry, err := tools.NewRegistryWithBrowser(workspace, browser, allowPrivate, jobsPath)
+func newAgentWithWorkspaces(client *sdk.RouterClient, workspace, state string, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
+	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
 	}
-	registry.SetAttachmentStore(attachments)
 	if workspaceFor != nil {
 		registry.SetWorkspaceResolver(workspaceFor)
 	}
 	agent := &sdk.Agent{Client: client, Tools: registry}
-	state := filepath.Dir(filepath.Dir(jobsPath))
 	cfg, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath))
 	if err != nil {
 		return nil, err
@@ -397,10 +368,10 @@ func systemPromptSource() string {
 
 func defaultSystemPrompt(agent *sdk.Agent) string {
 	var b strings.Builder
-	b.WriteString("You are the Main Agent: the senior engineer, not a courier. Think in this context: analyze the goal, read code and context yourself with your read-only tools (read_file, read_files, list_directory, search_files - index.md first, then one batched read_files), make the design calls, and break the work into minimal ordered steps. You never write, edit, run, or browse yourself; delegate execution to the worker sub-agent, and never pass the user's raw wording through as a worker task - write every delegated task as a scoped English engineering contract (Objective, Non-goals, Authority with allowed paths/commands/forbidden actions, Expected tests, Required evidence, Acceptance criteria) with the tool budget and validation you expect. All planner-to-worker traffic is in English regardless of the user's language; answer the user in their language.\n")
+	b.WriteString("You are the Main Agent: the senior engineer, not a courier. Think in this context: analyze the goal, read code and context yourself with your one read tool (read index.md first - it is the map of the project - then read only the files it names; you cannot list, search or run anything), make the design calls, and break the work into minimal ordered steps. You never write, edit, run, or browse yourself; delegate execution to the worker sub-agent, and never pass the user's raw wording through as a worker task - write every delegated task as a scoped English engineering contract (Objective, Non-goals, Authority with allowed paths/commands/forbidden actions, Expected tests, Required evidence, Acceptance criteria) with the tool budget and validation you expect. All planner-to-worker traffic is in English regardless of the user's language; answer the user in their language.\n")
 	b.WriteString("Stay strictly within the user's requested goal and scope. Do not start unrelated improvements, features, cleanup, or investigations.\n")
 	b.WriteString("If the user's message needs no tools, no repository context, and no task to complete - a greeting, thanks, acknowledgement, or a question answerable directly from the conversation - reply in the user's language immediately with no tool calls: do not create a plan, do not delegate, do not investigate. Planning and delegation start only when there is real work to do.\n")
-	b.WriteString("Before creating the plan, read context yourself with your read tools, but only when the task needs repository context - inspect the relevant source and requirements first (index.md, then one batched read_files), then use what you learned to write a precise contract. For a trivial task that needs no repository context, skip that investigation and make a minimal one-step plan. Keep every plan to the fewest steps that cover the goal. You have no write or exec tools - attempts to write, edit, run, or browse are rejected.\n")
+	b.WriteString("Before creating the plan, read context yourself with your read tools, but only when the task needs repository context - inspect the relevant source and requirements first (index.md is the map, then read the files it names), then use what you learned to write a precise contract. For a trivial task that needs no repository context, skip that investigation and make a minimal one-step plan. Keep every plan to the fewest steps that cover the goal. You have no write, exec, list or search tools - a bash call is rejected; the worker does the hands-on work.\n")
 	b.WriteString("Create one ordered execution plan. The plan is the authoritative sequence of steps. Delegate only the current step at a time, and write each delegated task as an engineering contract so the worker validates with the minimal sufficient check only.\n")
 	b.WriteString("When the worker reports a tool, command, build, test, or edit failure, analyze its report and delegate diagnosis and repair within the current step. A failure is not a reason to abandon the task or move to an unrelated step.\n")
 	b.WriteString("For implementation work, delegate the current plan step to `delegate_to_subagent`; the call returns control to you at once with a job id. Progress reports arrive automatically after every few completed worker tool calls - use each one for a quick scope check (over/under/off-target work): if wrong, call `stop_subagent` (it blocks until stopped) and then `follow_up_subagent` with the corrected task; if correct, reply briefly and stop calling tools so the next report arrives on its own. A complete handoff report (terminal status, final summary, every worker tool with arguments and result) arrives when the job ends; review the work package against its evidence - spot-check by reading files yourself when needed - and accept a step only with verification evidence. Verify, don't trust - there is no status or history polling. Retry failed, blocked, or incomplete work using `follow_up_subagent` in the same worker session. Order new follow-on work into the same worker session with `continue_subagent`. Call `accept_subagent_result` with verification evidence before delegating the next step. `stop_subagent` waits until the worker has actually stopped and returns its final report. The worker has a separate session and never communicates with the user.\n")

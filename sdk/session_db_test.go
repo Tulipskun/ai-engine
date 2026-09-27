@@ -66,7 +66,7 @@ func TestSessionDBRecordsAttemptAndUsageWithoutRawPayloads(t *testing.T) {
 		Model:           "model",
 		SystemPrompt:    "system",
 		Messages:        []Turn{{Role: RoleUser, Content: []ContentPart{{Type: ContentText, Text: "hello"}}}},
-		Tools:           []Tool{{Name: "read_file"}},
+		Tools:           []Tool{{Name: "read"}},
 		ThinkingLevel:   ThinkingLow,
 		MaxOutputTokens: 100,
 		Stream:          true,

@@ -99,7 +99,7 @@ func TestNonStreamedAnswerIsOneMessageThenDone(t *testing.T) {
 
 func TestToolStagesCarryTheCallAndTheResult(t *testing.T) {
 	tr := newDisplayTransport()
-	call := &sdk.ToolCall{ID: "call-1", Name: "read_files", Arguments: `{"path":"index.md"}`}
+	call := &sdk.ToolCall{ID: "call-1", Name: "read", Arguments: `{"path":"index.md"}`}
 	frames := capture(t, tr, func() {
 		_ = tr.Display(context.Background(), sdk.Output{Source: SourceName, SessionID: "s1",
 			Trace: &sdk.TraceEvent{Stage: sdk.TraceToolCall, ToolCall: call}})
@@ -110,7 +110,7 @@ func TestToolStagesCarryTheCallAndTheResult(t *testing.T) {
 	if len(frames) != 2 {
 		t.Fatalf("frames = %+v, want two tool frames", frames)
 	}
-	if frames[0].Stage != string(sdk.TraceToolCall) || frames[0].ToolCall == nil || frames[0].ToolCall.Name != "read_files" {
+	if frames[0].Stage != string(sdk.TraceToolCall) || frames[0].ToolCall == nil || frames[0].ToolCall.Name != "read" {
 		t.Fatalf("tool call frame = %+v", frames[0])
 	}
 	if frames[1].Stage != string(sdk.TraceToolResult) || frames[1].ToolResult == nil ||

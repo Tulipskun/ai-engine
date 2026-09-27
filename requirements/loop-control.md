@@ -10,12 +10,12 @@ The Main Agent is the senior: it reads code and context itself instead of
 delegating investigation blindly. Thinking stays in the main context
 (serial on thinking); the worker executes bounded contracts.
 
-- Read `index.md` first in one call, then batch needed files with
-  `read_files` in one call — the same ordered checklist below, but executed
-  by the planner with its own read tools (`read_file`, `read_files`,
-  `list_directory`, `search_files`). No write/exec tools, ever.
+- Read `index.md` first in one call, then read only the files it names as
+  relevant — the same ordered checklist below, but executed by the planner,
+  whose only tool is `read` since CHANGE-087. No write, exec, list or search
+  tool, ever: `index.md` is the only map the planner has.
 - Planner read budget per planning round: max ~10 reads total
-  (`index.md` + one batch). If the context is still unclear after that,
+  (`index.md` + the files it points at). If the context is still unclear after that,
   delegate a bounded read-only recon task (lookup only, no edits) instead
   of reading in a loop.
 - Never delegate thinking work (design decisions, architecture choices,
@@ -36,8 +36,8 @@ Every delegated task follows this order. No step is skipped, no step is
 repeated once its outcome is proven.
 
 1. Read `index.md` first in one call.
-2. Batch needed files with `read_files` in one call — never repeated
-   `read_file` or discovery loops for files already known.
+2. Read the files `index.md` points at, one call each — never re-read a file
+   you already read, and never guess a path you have not seen in `index.md`.
 3. Re-check `index.md` plus `requirements/` before and after code changes.
 4. Implement the smallest change that satisfies the step.
 5. Validate with the minimal sufficient check: one command that proves the
@@ -52,20 +52,21 @@ task states its budget explicitly, for example:
 
 ```text
 Tool budget: max 6 reads, max 2 edits, max 3 bash calls.
-Batch reads via read_files. If the budget is exceeded, stop as failed
+Your tools are read and bash only. If the budget is exceeded, stop as failed
 and write a lesson to requirements/lessons.md instead of looping.
 ```
 
 Guidance: single-digit totals per step. A step that needs more than ~10
 tool calls is a step that must be split.
 
-## Batch reads
+## Reads and the shell (CHANGE-087)
 
-- `read_files` (up to 32 paths, one call) is the default for multi-file
-  reads, including the `index.md`-first + batch pattern.
-- `read_file` is for a genuinely single file only.
-- Never `list_directory` / `search_files` in a loop to rediscover what a
-  previous call already returned.
+- `read` is the only read tool: one file per call, 4 MiB cap.
+- `bash` replaces every tool that used to do listing, search, writing or
+  editing: `ls`, `rg`, `sed`, `cat`, `tee`, `python3`, `go test`.
+- Read `index.md` before touching anything else, and use `ls`/`rg` through
+  `bash` only when `index.md` did not name the file you need — never to
+  rediscover what a previous call already returned.
 
 ## Stop condition
 
@@ -83,9 +84,9 @@ Budget exceeded = fail, not retry:
 Enforced in `sdk/loop_control.go`; quoted here so prompts and code agree:
 
 - Max 30 executed tool calls per turn attempt — then auto-fail.
-- Max 8 consecutive read/edit-probe calls (`read_file`, `read_files`,
-  `list_directory`, `search_files`, `edit_file`) without an intervening
-  progress tool — then auto-fail as a stall.
+- Max 8 consecutive `read` calls without an intervening progress tool
+  (`bash`) — then auto-fail as a stall. `read` is the only probe tool left
+  since CHANGE-087.
 - Max 1 MiB per `bash` tool result payload — then auto-fail.
 - Budget failures are never retried at the turn level.
 

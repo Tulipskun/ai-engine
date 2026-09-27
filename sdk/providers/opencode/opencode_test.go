@@ -406,7 +406,7 @@ func TestRequestPresentsTheClientToolSet(t *testing.T) {
 		Model: "mimo-v2.5-free",
 		Tools: []sdk.Tool{
 			{Name: "bash", InputSchema: map[string]any{"type": "object"}},
-			{Name: "read_file", InputSchema: map[string]any{"type": "object"}},
+			{Name: "read", InputSchema: map[string]any{"type": "object"}},
 			{Name: "os_screenshot"},
 		},
 	})
@@ -434,11 +434,13 @@ func TestRequestPresentsTheClientToolSet(t *testing.T) {
 
 // A call that comes back under a client name is executed as the session's tool.
 func TestToolCallNamesMapBackToTheSession(t *testing.T) {
-	tools := []sdk.Tool{{Name: "bash"}, {Name: "read_file"}, {Name: "search_files"}}
+	// Only the two names this adapter sends can come back; a session tool the
+	// adapter never offers stays unreachable rather than being translated.
+	tools := []sdk.Tool{{Name: "bash"}, {Name: "read"}}
 	for _, tc := range []struct{ client, want string }{
 		{"bash", "bash"},
-		{"read", "read_file"},
-		{"grep", "search_files"},
+		{"read", "read"},
+		{"grep", ""},
 		{"todowrite", ""},
 		{"websearch", ""},
 	} {

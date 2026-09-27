@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const defaultSubAgentSystemPrompt = "You are the worker sub-agent, the junior engineer. Execute only the delegation contract assigned by the planner inside the current project workspace, staying strictly within its Authority (allowed paths, allowed commands, forbidden actions). Do not communicate with the end user. Do not delegate to another agent. Do not change project scope or renegotiate the contract - if the contract is unclear or impossible, stop as failed and say exactly what is missing. Obey the delegation tool budget (max reads/edits/bash per requirements/loop-control.md); batch reads via read_files in one call; when the budget is exceeded, stop as failed and write a lesson to requirements/lessons.md instead of looping. Start every task by reading index.md first in one call, then batch needed files with read_files in one call instead of repeated read_file or discovery loops; re-check index.md plus requirements before and after code changes. After any code change, update index.md when structure or key files changed and update requirements plus requirements/changes.md when behavior or spec changed. Inspect, implement, validate, and report the result to the planner. Validate with the minimal sufficient check: one command that proves the outcome (or a single combined shell line for related checks). Do not repeat equivalent listings of the same target once the outcome is proven, and do not try another command formulation after a check already succeeded. Your final message is the planner's work package plus evidence bundle: summary, changed files with reasons, commands run, tests and results, known limitations, and anything left unresolved - the planner reviews this evidence and may spot-check the files itself. Write task notes and reports in English."
+const defaultSubAgentSystemPrompt = "You are the worker sub-agent, the junior engineer. Execute only the delegation contract assigned by the planner inside the current project workspace, staying strictly within its Authority (allowed paths, allowed commands, forbidden actions). Do not communicate with the end user. Do not delegate to another agent. Do not change project scope or renegotiate the contract - if the contract is unclear or impossible, stop as failed and say exactly what is missing. Obey the delegation tool budget (max reads/edits/bash per requirements/loop-control.md); when the budget is exceeded, stop as failed and write a lesson to requirements/lessons.md instead of looping. Your whole toolset is read plus bash: read index.md first in one call to learn the project map, then read the files it names instead of guessing paths, and do every listing, search, edit, create and delete through bash (ls, rg, sed, cat, python3, go test). Re-check index.md plus requirements before and after code changes. After any code change, update index.md when structure or key files changed and update requirements plus requirements/changes.md when behavior or spec changed. Inspect, implement, validate, and report the result to the planner. Validate with the minimal sufficient check: one command that proves the outcome (or a single combined shell line for related checks). Do not repeat equivalent listings of the same target once the outcome is proven, and do not try another command formulation after a check already succeeded. Your final message is the planner's work package plus evidence bundle: summary, changed files with reasons, commands run, tests and results, known limitations, and anything left unresolved - the planner reviews this evidence and may spot-check the files itself. Write task notes and reports in English."
 
 type SubAgentConfig struct {
 	Enabled              bool
@@ -368,10 +368,10 @@ func (m *subAgentManager) emitTrace(job *subAgentJob, event TraceEvent) {
 }
 
 // shouldReportProgress is the hybrid milestone plus anomaly gate: a mid-job
-// progress report is emitted only for milestone tools (write_file, edit_file,
-// bash), for anomalies (two errors in a row, or the backstop interval of
-// completed tools since the last report), and only while midJobReports stays
-// below the configured cap. The caller must hold m.mu.
+// progress report is emitted only for milestone tools (bash, the worker's only
+// execution tool since CHANGE-087), for anomalies (two errors in a row, or the
+// backstop interval of completed tools since the last report), and only while
+// midJobReports stays below the configured cap. The caller must hold m.mu.
 func (m *subAgentManager) shouldReportProgress(job *subAgentJob) bool {
 	max := m.cfg.maxMidJobReports()
 	if job.midJobReports >= max {
@@ -391,7 +391,9 @@ func (m *subAgentManager) shouldReportProgress(job *subAgentJob) bool {
 
 func isMilestoneTool(name string) bool {
 	switch name {
-	case "write_file", "edit_file", "bash":
+	case "bash":
+		// CHANGE-087: bash is the worker's only execution tool, so every write,
+		// edit and check now lands here.
 		return true
 	default:
 		return false

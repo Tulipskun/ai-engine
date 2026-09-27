@@ -52,7 +52,7 @@ hand over on restart.
 
 Provider keys, the system prompt and session history are **not** configured here
 — they live in D1 as `state` rows (`config:provider`, `config:system`,
-`config:attachment`, `config:browser`, `sessions/<id>`) and are pulled in once the
+`sessions/<id>`) and are pulled in once the
 first verified phone connects. There is no `worker_base` any more: the daemon
 calls the Cloudflare API directly (`https://api.cloudflare.com/client/v4`) and
 discovers the account and the database from the phone's token, so the empty

@@ -52,6 +52,19 @@ func LoadSystemConfig(path string) (SystemConfig, error) {
 	return cfg, nil
 }
 
+// dirOf returns the directory part of a config path. CHANGE-087 moved it here
+// when the browser config that used to own it was deleted.
+func dirOf(path string) string {
+	i := strings.LastIndex(path, "/")
+	if i < 0 {
+		return "."
+	}
+	if i == 0 {
+		return "/"
+	}
+	return path[:i]
+}
+
 func SaveSystemConfig(path string, cfg SystemConfig) error {
 	if path == "" {
 		path = DefaultSystemConfigPath

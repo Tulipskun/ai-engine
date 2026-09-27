@@ -176,11 +176,11 @@ func TestSubAgentProgressReportsArriveEveryXToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := awaitReport(t, events, "progress")
-	if !strings.Contains(first.Report, "read_file") || !strings.Contains(first.Report, "[ok]") {
+	if !strings.Contains(first.Report, "read") || !strings.Contains(first.Report, "[ok]") {
 		t.Fatalf("progress report missing tool lines: %s", first.Report)
 	}
 	second := awaitReport(t, events, "progress")
-	if !strings.Contains(second.Report, "4. read_file") {
+	if !strings.Contains(second.Report, "4. read") {
 		t.Fatalf("second progress report missing later tools: %s", second.Report)
 	}
 	final := awaitReport(t, events, "final")
@@ -194,7 +194,7 @@ func TestSubAgentProgressReportsArriveEveryXToolCalls(t *testing.T) {
 
 type echoExecutor struct{}
 
-func (e *echoExecutor) Definitions() []Tool { return []Tool{{Name: "read_file"}} }
+func (e *echoExecutor) Definitions() []Tool { return []Tool{{Name: "read"}} }
 func (e *echoExecutor) Execute(_ context.Context, call ToolCall) ToolResult {
 	return ToolResult{ID: call.ID, Content: "file body"}
 }
@@ -211,7 +211,7 @@ func (p *countingToolProvider) Generate(_ context.Context, req Request) (Respons
 	p.requests = append(p.requests, req)
 	n := len(p.requests)
 	if n <= p.rounds {
-		return Response{ToolCalls: []ToolCall{{ID: fmt.Sprintf("c%d", n), Name: "read_file", Arguments: `{"path":"a.txt"}`}}}, nil
+		return Response{ToolCalls: []ToolCall{{ID: fmt.Sprintf("c%d", n), Name: "read", Arguments: `{"path":"a.txt"}`}}}, nil
 	}
 	return Response{Content: []ContentPart{{Type: ContentText, Text: "worker done"}}}, nil
 }
@@ -375,10 +375,16 @@ func TestRequestStopSubAgentStopsOneJobByID(t *testing.T) {
 		t.Fatal("an unknown job must be reported, not silently accepted")
 	}
 	// A job belonging to another chat is not this chat's to stop.
-	if _, err := r.Delegate(context.Background(), "another task"); err == nil {
+	if other, err := r.Delegate(context.Background(), "another task"); err == nil {
 		if err := r.manager.RequestStop("other-chat", jobID); err == nil {
 			t.Fatal("a job from another chat must not be stoppable")
 		}
+		// Stop the second worker before the test returns: a leaked job keeps
+		// writing into this test's temp dir and makes its cleanup racy.
+		if err := r.manager.RequestStop(r.parent.ID(), other); err != nil {
+			t.Fatalf("stopping the second job: %v", err)
+		}
+		awaitReport(t, events, "final")
 	}
 }
 
