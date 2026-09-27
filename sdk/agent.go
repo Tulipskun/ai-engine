@@ -21,7 +21,6 @@ type ToolExecutor interface {
 type Agent struct {
 	Client          *RouterClient
 	Tools           ToolExecutor
-	ToolGuard       ToolGuard
 	MaxRetries      int
 	DisablePlanning bool
 	SubAgentConfig  SubAgentConfig
@@ -289,28 +288,6 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 			if err := lc.noteCall(call.Name); err != nil {
 				return Response{}, err
 			}
-			if allowed, guardErr := a.allowTool(ctx, session, *callCopy); guardErr != nil {
-				return Response{}, guardErr
-			} else if !allowed {
-				result := ToolResult{ID: call.ID, Content: "JEV guard denied this tool call as outside the permitted scope.", IsError: true}
-				traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
-				if entry != nil {
-					resultCopy := result
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: &resultCopy}}); err != nil { return Response{}, err }
-				} else { session.Append(Turn{Role: RoleToolResult, ToolResult: &result}) }
-				continue
-			}
-			if allowed, guardErr := a.allowTool(ctx, session, *callCopy); guardErr != nil {
-				return Response{}, guardErr
-			} else if !allowed {
-				result := ToolResult{ID: call.ID, Content: "JEV guard denied this tool call as outside the permitted scope.", IsError: true}
-				traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
-				if entry != nil {
-					resultCopy := result
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: &resultCopy}}); err != nil { return Response{}, err }
-				} else { session.Append(Turn{Role: RoleToolResult, ToolResult: &result}) }
-				continue
-			}
 			result := executor.Execute(ctx, call)
 			if err := ctx.Err(); err != nil {
 				return Response{}, err
@@ -503,15 +480,6 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 	}
 }
 
-func (a *Agent) allowTool(ctx context.Context, session *Session, call ToolCall) (bool, error) {
-	if a == nil || a.ToolGuard == nil || session == nil { return true, nil }
-	history := session.History()
-	var user Turn
-	for i := len(history)-1; i >= 0; i-- {
-		if history[i].Role == RoleUser { user = history[i]; break }
-	}
-	return a.ToolGuard.Allow(ctx, user, call)
-}
 
 func settleInterruptedTurn(session *Session, before []Turn) {
 	if session == nil {

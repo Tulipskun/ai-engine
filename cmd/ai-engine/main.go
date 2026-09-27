@@ -15,7 +15,6 @@ import (
 
 	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/jev"
 	"github.com/Tulipskun/ai-engine/tools"
 	"github.com/Tulipskun/ai-engine/transport"
 )
@@ -268,7 +267,7 @@ func newAgentWithWorkspaces(client *sdk.RouterClient, workspace, state string, w
 	if workspaceFor != nil {
 		registry.SetWorkspaceResolver(workspaceFor)
 	}
-	agent := &sdk.Agent{Client: client, Tools: registry, ToolGuard: jev.NewFromEnv()}
+	agent := &sdk.Agent{Client: client, Tools: registry}
 	cfg, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath))
 	if err != nil {
 		return nil, err

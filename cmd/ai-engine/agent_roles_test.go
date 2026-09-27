@@ -130,8 +130,8 @@ func TestDelegatedWorkerRetainsRealToolsAndContext(t *testing.T) {
 				if !reflect.DeepEqual(req.Tools, agent.Tools.Definitions()) {
 					t.Fatalf("worker definitions differ from real registry: %+v", req.Tools)
 				}
-				// CHANGE-087: read and bash are the whole execution registry.
-				if len(req.Tools) != 2 {
+				// The worker receives the real execution registry, including screen_control.
+				if len(req.Tools) != 3 {
 					t.Fatalf("expected the real execution registry, got %d tools", len(req.Tools))
 				}
 				for _, tool := range req.Tools {

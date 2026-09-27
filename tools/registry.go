@@ -32,7 +32,8 @@ func NewRegistry(workspace string) (*Registry, error) {
 	r := &Registry{workspace: root, handlers: make(map[string]handler)}
 	r.register("read", `Read a UTF-8 text file inside the workspace. Named to match the OpenCode client's read tool, so a provider that only offers the client's own tool set still reaches this tool by its own name.`, readFileTool(r.rootFor), map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}})
 	r.register("bash", `Run a bash command line synchronously in the workspace. Type shell exactly as you would in a terminal: chains (&&, ||, ;), pipes, redirects, globs, quoting and multi-line all work. Returns combined stdout/stderr and the exit code. This is the only execution tool: create, edit, search and delete files (printf, sed, python3, ripgrep), run builds and tests, and inspect git — all through the shell.`, bashTool(r.rootFor), map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}, "timeout_ms": map[string]any{"type": "integer"}}, "required": []string{"command"}})
-	return r, nil
+		r.register("screen_control", "Control the Android screen through AIxodia AccessibilityService. The phone-local JEV-compatible decision model chooses and executes the next action.", screenControlTool(), map[string]any{"type":"object","properties":map[string]any{"goal":map[string]any{"type":"string"}}, "required":[]string{"goal"}})
+return r, nil
 }
 
 // SetWorkspaceResolver installs a per-invocation workspace lookup used by

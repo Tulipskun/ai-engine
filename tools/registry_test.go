@@ -17,11 +17,11 @@ func TestRegistryDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defs := r.Definitions()
-	// CHANGE-087: read and bash are the whole surface.
-	if len(defs) != 2 {
+	// read, bash and screen_control are the execution surface.
+	if len(defs) != 3 {
 		t.Fatalf("definitions=%d", len(defs))
 	}
-	if defs[0].Name != "bash" || defs[1].Name != "read" {
+	if defs[0].Name != "bash" || defs[1].Name != "read" || defs[2].Name != "screen_control" {
 		t.Fatalf("definitions=%q,%q want bash,read", defs[0].Name, defs[1].Name)
 	}
 }
