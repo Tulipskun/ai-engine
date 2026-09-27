@@ -1246,3 +1246,6 @@ Reason: push kernel ใหม่ติด `Maximum batch CPU session count of 5 
 Impact: deploy/kaggle/{aixodia.ipynb,kernel-metadata.json,README.md}, index.md
 Validation: `go build ./...`; `go test ./... -count=1` ผ่าน 13 package; notebook ผ่าน Phase A ใน kernel (TEST_EXIT=0) และประกาศ `repo_ready` พร้อม sha
 Status: accepted
+
+
+- CHANGE-092 (2026-09-28) — Replace the incorrect hosted JEV bash gate with an Android screen-control tool. The daemon exposes screen_control as a normal agent tool; execution is delegated to the AIxodia localhost AccessibilityService at 127.0.0.1:18790. The phone runs the JEV-compatible Laya model locally and returns the executed screen action. No hosted Jev/OpenCode endpoint or JEV credential is used.
