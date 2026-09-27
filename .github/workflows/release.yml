@@ -29,9 +29,9 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.sha }}" -o dist/ai-linux-arm64 ./cmd/ai
-          sha256sum dist/ai-linux-arm64 | tee dist/checksums.txt
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.sha }}" -o dist/ai-engine-linux-arm64 ./cmd/ai-engine
+          sha256sum dist/ai-engine-linux-arm64 | tee dist/checksums.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ai-linux-arm64
+          name: ai-engine-linux-arm64
           path: dist/
