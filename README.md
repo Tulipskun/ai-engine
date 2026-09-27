@@ -15,6 +15,20 @@ There is no CLI, no Discord bot and no self-update any more (CHANGE-059): the
 phone is the only client, the daemon owns no state, and there is nothing to
 hand over on restart.
 
+## Tools
+
+The worker's whole tool surface is two tools (`CHANGE-087`):
+
+- `read` — one UTF-8 text file inside the workspace, 4 MiB cap, `safePath` /
+  `withinRoot` enforced
+- `bash` — the only execution tool: create, edit, search, list, build and test
+  all go through the shell
+
+The Main Agent (planner) gets `read` and the sub-agent orchestration tools; it
+cannot execute. There is no browser, no attachment store, no OS input, no
+background job manager and no `web_fetch` tool — `bash` (and `curl`) covers
+those jobs.
+
 ## Gateway and state
 
 - **One ingress**: `transport/mobile` listens on localhost and publishes itself

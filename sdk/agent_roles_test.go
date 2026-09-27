@@ -42,7 +42,6 @@ func TestAgentRoleSeparation(t *testing.T) {
 					tools := &agentTestTools{definitions: []Tool{
 						{Name: "bash", Description: "execute shell", InputSchema: map[string]any{"type": "object"}},
 						{Name: "read", Description: "read a file", InputSchema: map[string]any{"type": "object"}},
-						{Name: "edit_file", Description: "edit a file", InputSchema: map[string]any{"type": "object"}},
 					}}
 					a := &Agent{Client: c, Tools: tools, DisablePlanning: worker, SubAgentConfig: SubAgentConfig{Enabled: configured}, MaxRetries: -1}
 					base := "You are the worker sub-agent. Use bash to validate.\nAvailable tools:\ncustom context\nProject Requirements (repository source of truth):\nkeep scope\ncustom trailing instruction"

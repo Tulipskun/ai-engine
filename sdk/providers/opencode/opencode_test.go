@@ -407,7 +407,6 @@ func TestRequestPresentsTheClientToolSet(t *testing.T) {
 		Tools: []sdk.Tool{
 			{Name: "bash", InputSchema: map[string]any{"type": "object"}},
 			{Name: "read", InputSchema: map[string]any{"type": "object"}},
-			{Name: "os_screenshot"},
 		},
 	})
 	tools, _ := b["tools"].([]any)

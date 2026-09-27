@@ -269,7 +269,7 @@ func TestStreamFallsBackToTheResponsesDialect(t *testing.T) {
 func TestStreamChatCollectsToolCallDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_files","arguments":"{\"pa"}}]}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read","arguments":"{\"pa"}}]}}]}` + "\n\n"))
 		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a\"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -289,7 +289,7 @@ func TestStreamChatCollectsToolCallDeltas(t *testing.T) {
 			t.Fatalf("stream error: %v", event.Err)
 		}
 	}
-	if call == nil || call.Name != "read_files" || call.Arguments != `{"path":"a"}` {
+	if call == nil || call.Name != "read" || call.Arguments != `{"path":"a"}` {
 		t.Fatalf("tool call = %+v, want the arguments assembled from the deltas", call)
 	}
 }

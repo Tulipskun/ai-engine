@@ -22,6 +22,10 @@ func (e *planningTestExecutor) Execute(_ context.Context, call ToolCall) ToolRes
 	return ToolResult{Content: "executed:" + call.Name}
 }
 
+// mainReadTestDefs stands in for the real registry. It carries bash (the one
+// tool the planner must never see) plus two names that no longer exist, on
+// purpose: the planner's filter is a name allowlist, so an unknown name has to
+// be filtered out too rather than falling through to the base executor.
 func mainReadTestDefs() []Tool {
 	names := []string{"read", "write_file", "edit_file", "bash"}
 	defs := make([]Tool, 0, len(names))
