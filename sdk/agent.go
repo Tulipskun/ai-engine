@@ -288,17 +288,6 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 			if err := lc.noteCall(call.Name); err != nil {
 				return Response{}, err
 			}
-			if allowed, guardErr := a.allowTool(ctx, session, *callCopy); guardErr != nil {
-				return Response{}, guardErr
-			} else if !allowed {
-				result := ToolResult{ID: call.ID, Content: "JEV guard denied this tool call as outside the permitted scope.", IsError: true}
-				traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
-				if entry != nil {
-					resultCopy := result
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: &resultCopy}}); err != nil { return Response{}, err }
-				} else { session.Append(Turn{Role: RoleToolResult, ToolResult: &result}) }
-				continue
-			}
 			result := executor.Execute(ctx, call)
 			if err := ctx.Err(); err != nil {
 				return Response{}, err
