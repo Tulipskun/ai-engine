@@ -1253,3 +1253,5 @@ Status: accepted
 - CHANGE-093 (2026-09-28) — Remove the remaining streamed tool-loop reference to the retired hosted JEV gate.
 
 - CHANGE-094 (2026-09-28) — Remove obsolete main-agent JEV field wiring.
+
+- CHANGE-095 (2026-09-28) — Enforce the external executor boundary for screen control. ai-engine's screen_control tool only delegates a screen-control goal to the separately running local JEV runtime via JEV_LOCAL_URL and returns JEV's result; it does not call AIxodia, Accessibility APIs, or execute pointer/screen actions itself. AIxodia remains frontend-only. The external JEV runtime is not stored in this repository.
