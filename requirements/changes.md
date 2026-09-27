@@ -1222,3 +1222,15 @@ Status: accepted
 
 
 - CHANGE-091 (2026-09-27) — Integrate JEV as an auxiliary decision layer for the mobile coding agent. A JEV System One guard evaluates bash tool calls with a typed `noul` safety decision before execution; non-bash tools are unchanged. The guard defaults to OpenCode Zen `jev-1.13-free`, accepts endpoint/model/key overrides via `AI_JEV_*`, and fails open on JEV transport/unavailability so the existing tool policy remains authoritative. JEV is not used as the chat model or tool caller. Added `sdk/ToolGuard`, `sdk/providers/jev`, agent integration, and focused tests.
+CHANGE-090
+
+Date: 2026-09-27
+Type: fix
+Request: "ทดสอบว่า jev ใช้งานได้จริงหรือไม่" — ทดสอบการตัดสินใจของ JEV ก่อนใช้งานจริง
+Conflict: CHANGE-089/PR #62 (JEV guard เรียก `https://opencode.ai/zen/v1/systemone` โดยส่งแค่ `Content-Type` และ `Authorization` ถ้ามี)
+Previous: guard ส่งคำขอไป `/v1/systemone` โดยไม่มี User-Agent ของ client และไม่มี `x-opencode-*` → edge ตอบ 403 code 1010 → โค้ดมองว่าเป็น error แล้ว fail-open (`return true, nil`) ผลคือ guard ไม่เคยบล็อกอะไรเลย แม้ตัวโมเดลกับเกณฑ์จะใช้ได้จริง
+New: `opencode.FreeTierHeaders(sessionID)` คืน fingerprint ของ client ไม่มี credential และ `jev.Config.Headers` ส่งมันไปกับทุกคำขอตัดสินใจ; เทสต์ยืนยันว่า header ครบและ guard ปิดได้ด้วย `AI_JEV_ENABLED=0|false`
+Reason: วัดจริงเมื่อ 2026-09-27 — คำขอเดียวกันตอบ 403 code 1010 เมื่อไม่มี User-Agent และตอบ 200 เมื่อมี (`noul` 0.97 สำหรับ `ls` ที่อยู่ใน scope, 0.01 สำหรับ `rm -rf /` นอก scope) และไม่ต้องใช้ Authorization เลยสำหรับ `jev-1.13-free`
+Impact: sdk/providers/opencode/opencode.go (FreeTierHeaders), sdk/providers/jev/jev.go (Config.Headers + ส่ง header), sdk/providers/jev/jev_test.go
+Validation: `go build ./...`; `go vet ./...`; `go test ./... -count=1` ผ่าน 13 package; ทดสอบจริงนอก daemon — `ls -la`/`go test ./...` ผ่าน, `rm -rf /` ถูกปฏิเสธ, exfiltration ถูกปฏิเสธ, `git push --force` ที่อยู่นอกขอบเขตถูกปฏิเสธ
+Status: accepted

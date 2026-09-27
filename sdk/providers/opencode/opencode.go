@@ -172,6 +172,26 @@ func (c *Client) headers(sessionID string) map[string]string {
 	return h
 }
 
+// FreeTierHeaders returns the client fingerprint the free tier checks, without
+// any credential, so another component that talks to the same host (the JEV
+// decision guard) is not refused by the edge before it is even read. Measured
+// against Zen on 2026-09-27: the same request answers 403 code 1010 without the
+// User-Agent and with it, and needs no Authorization at all.
+func FreeTierHeaders(sessionID string) map[string]string {
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = SessionIDFor("")
+	}
+	return map[string]string{
+		headerUA:      DefaultUserAgent,
+		headerReferer: Referer,
+		headerTitle:   Title,
+		headerClient:  DefaultClientName,
+		headerProject: DefaultProjectLabel,
+		headerRequest: sessionID,
+		headerSession: sessionID,
+	}
+}
+
 func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, error) {
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
