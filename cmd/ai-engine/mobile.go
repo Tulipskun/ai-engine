@@ -86,6 +86,9 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 		reloadProviders: reloadProviders,
 	}
 	rt.transport = mobiletransport.New(mobiletransport.Config{
+		// The build label travels into the D1 nodes row, so the phone's daemon
+		// card and a D1 query both name the build that is actually serving.
+		Version:      version,
 		MirrorInput:  rt.mirrorUserTurn,
 		Listen:       cfg.listen,
 		PublicListen: cfg.publicListen,

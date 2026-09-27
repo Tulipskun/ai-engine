@@ -1206,3 +1206,16 @@ Impact: cmd/ai-engine/mobile.go (SetSessionModel + sessionRouteChange + Hydrate)
 เพิ่ม: `GET /api/sessions/<id>` ตอบ `SessionAgentConfig` ที่ resolve แล้ว — แอปเรียก endpoint นี้ก่อนเปิด session sheet แต่ daemon ไม่มี handler สำหรับ GET เลย (มีแต่ PATCH/DELETE) ทำให้แผงตั้งค่าโหลดค่าไม่ได้และสวิตช์แสดงค่าเริ่มต้นแทนค่าจริง
 Validation: `go build ./...`; `go vet ./...`; `go test ./... -count=1` ผ่านทั้ง 12 package รวมถึงเทสต์ที่ยืนยันว่า sub-only/flag-only/clear-sub ไม่แตะ main pin, flag-only ไม่ล้าง sub route และ GET คืน effective config
 Status: accepted
+
+CHANGE-089
+
+Date: 2026-09-27
+Type: change
+Request: "แก้ไขทั้งหมดให้เรียบร้อย" — ต้องรู้ว่า daemon ตัวไหนกำลังให้บริการอยู่จริง
+Conflict: REQ-046(4) กำหนดให้ `nodes` เป็นช่องทางค้นหา daemon แต่คอลัมน์ `version` ไม่เคยถูกเขียน ทำให้ถามไม่ได้ว่ากำลังคุยกับ build ไหน
+Previous: `mobiletransport.Config.Version` มีอยู่แต่ไม่มีใครเติมค่า → ทุก heartbeat เขียน `version` เป็นค่าว่าง
+New: `cmd/ai-engine` ส่ง `version` (จาก ldflags, ค่าเริ่มต้น `dev`) เข้า transport config เพื่อให้ heartbeat เขียน build label ลง `nodes.version`; notebook ใส่ `-ldflags "-X main.version=<sha>"`
+Reason: ตอน deploy เจอว่า kernel หลายเวอร์ชันรันพร้อมกันและแต่ละตัวเขียนแถว `nodes` ทับกัน ทำให้ดูจาก D1 ไม่ได้ว่าแอปกำลังคุยกับ daemon ตัวไหน — พอร์ตกลับมา build label ก็บอกได้ทันทีว่าใครเป็นเจ้าของ
+Impact: cmd/ai-engine/mobile.go, notebook Phase B (`/tmp/opencode/kag-aixodia`)
+Validation: `go build ./...`; `go test ./... -count=1` ผ่านทั้ง 12 package; ยืนยันบนเครื่องด้วยการดูค่า version ใน `nodes` และการ์ด daemon ในแอป
+Status: accepted
