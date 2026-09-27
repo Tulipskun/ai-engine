@@ -1219,3 +1219,6 @@ Reason: ตอน deploy เจอว่า kernel หลายเวอร์�
 Impact: cmd/ai-engine/mobile.go, notebook Phase B (`/tmp/opencode/kag-aixodia`)
 Validation: `go build ./...`; `go test ./... -count=1` ผ่านทั้ง 12 package; ยืนยันบนเครื่องด้วยการดูค่า version ใน `nodes` และการ์ด daemon ในแอป
 Status: accepted
+
+
+- CHANGE-091 (2026-09-27) — Integrate JEV as an auxiliary decision layer for the mobile coding agent. A JEV System One guard evaluates bash tool calls with a typed `noul` safety decision before execution; non-bash tools are unchanged. The guard defaults to OpenCode Zen `jev-1.13-free`, accepts endpoint/model/key overrides via `AI_JEV_*`, and fails open on JEV transport/unavailability so the existing tool policy remains authoritative. JEV is not used as the chat model or tool caller. Added `sdk/ToolGuard`, `sdk/providers/jev`, agent integration, and focused tests.
