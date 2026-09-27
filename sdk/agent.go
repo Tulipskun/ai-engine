@@ -289,7 +289,7 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 			if err := lc.noteCall(call.Name); err != nil {
 				return Response{}, err
 			}
-			if allowed, guardErr := a.allowTool(ctx, session, callCopy); guardErr != nil {
+			if allowed, guardErr := a.allowTool(ctx, session, *callCopy); guardErr != nil {
 				return Response{}, guardErr
 			} else if !allowed {
 				result := ToolResult{ID: call.ID, Content: "JEV guard denied this tool call as outside the permitted scope.", IsError: true}
