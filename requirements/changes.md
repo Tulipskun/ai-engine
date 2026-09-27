@@ -1251,3 +1251,5 @@ Status: accepted
 - CHANGE-092 (2026-09-28) — Replace the incorrect hosted JEV bash gate with an Android screen-control tool. The daemon exposes screen_control as a normal agent tool; execution is delegated to the AIxodia localhost AccessibilityService at 127.0.0.1:18790. The phone runs the JEV-compatible Laya model locally and returns the executed screen action. No hosted Jev/OpenCode endpoint or JEV credential is used.
 
 - CHANGE-093 (2026-09-28) — Remove the remaining streamed tool-loop reference to the retired hosted JEV gate.
+
+- CHANGE-094 (2026-09-28) — Remove obsolete main-agent JEV field wiring.
