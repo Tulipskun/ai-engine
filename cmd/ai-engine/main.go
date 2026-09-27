@@ -15,6 +15,7 @@ import (
 
 	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/sdk/providers/jev"
 	"github.com/Tulipskun/ai-engine/tools"
 	"github.com/Tulipskun/ai-engine/transport"
 )
