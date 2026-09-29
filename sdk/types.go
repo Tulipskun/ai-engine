@@ -87,7 +87,39 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 	CacheReadTokens  int `json:"cache_read_tokens"`
 	CacheWriteTokens int `json:"cache_write_tokens"`
+	// ReasoningTokens are the output tokens a model spent thinking before it
+	// wrote the answer, counted separately by OpenAI and Gemini. Anthropic
+	// reports thinking time in milliseconds but never a token count, so this
+	// stays 0 there rather than being invented.
+	ReasoningTokens int `json:"reasoning_tokens"`
+	// InputIncludesCache records how the provider counted the input. OpenAI
+	// and Gemini report a prompt total that already contains the cached part;
+	// Anthropic reports cache separately from input. Without this the phone
+	// cannot tell "63701 total, 63424 of it cached" from "63701 fresh plus
+	// 63424 cached", and the two do not look the same on purpose.
+	InputIncludesCache bool `json:"input_includes_cache"`
 }
+
+// FreshInputTokens is the input that was not served from cache, which is the
+// number a reader compares against the cache count.
+func (u Usage) FreshInputTokens() int {
+	if u.InputIncludesCache {
+		if n := u.InputTokens - u.CacheReadTokens; n > 0 {
+			return n
+		}
+		return 0
+	}
+	return u.InputTokens
+}
+
+// TotalInputTokens is the whole prompt however the provider chose to split it.
+func (u Usage) TotalInputTokens() int {
+	if u.InputIncludesCache {
+		return u.InputTokens
+	}
+	return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+}
+
 type CacheInfo struct {
 	Hit   bool   `json:"hit"`
 	Layer string `json:"layer,omitempty"`

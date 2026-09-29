@@ -75,6 +75,9 @@ type ResponsesResponse struct {
 		InputDetails struct {
 			Cached int `json:"cached_tokens"`
 		} `json:"input_tokens_details"`
+		OutputDetails struct {
+			Reasoning int `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
 	} `json:"usage"`
 }
 type ChatResponse struct {
@@ -99,6 +102,9 @@ type ChatResponse struct {
 		PromptDetails    struct {
 			Cached int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
+		CompletionDetails struct {
+			Reasoning int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -218,7 +224,7 @@ func BuildChatRequest(req sdk.Request) map[string]any {
 }
 func buildChat(req sdk.Request) map[string]any { return BuildChatRequest(req) }
 func ParseResponsesResponse(r ResponsesResponse) sdk.Response {
-	out := sdk.Response{Provider: "openai", Model: r.Model, Usage: sdk.Usage{InputTokens: r.Usage.InputTokens, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.InputDetails.Cached}, Cache: sdk.CacheInfo{Layer: "provider"}}
+	out := sdk.Response{Provider: "openai", Model: r.Model, Usage: sdk.Usage{InputTokens: r.Usage.InputTokens, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.InputDetails.Cached, ReasoningTokens: r.Usage.OutputDetails.Reasoning, InputIncludesCache: true}, Cache: sdk.CacheInfo{Layer: "provider"}}
 	out.Cache.Hit = out.Usage.CacheReadTokens > 0
 	for _, item := range r.Output {
 		switch item.Type {
@@ -244,7 +250,7 @@ func ParseResponsesResponse(r ResponsesResponse) sdk.Response {
 }
 func parseResponse(r ResponsesResponse) sdk.Response { return ParseResponsesResponse(r) }
 func ParseChatResponse(r ChatResponse) sdk.Response {
-	out := sdk.Response{Provider: "openai", Model: r.Model, Usage: sdk.Usage{InputTokens: r.Usage.PromptTokens, OutputTokens: r.Usage.CompletionTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.PromptDetails.Cached}, Cache: sdk.CacheInfo{Layer: "provider"}}
+	out := sdk.Response{Provider: "openai", Model: r.Model, Usage: sdk.Usage{InputTokens: r.Usage.PromptTokens, OutputTokens: r.Usage.CompletionTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.PromptDetails.Cached, ReasoningTokens: r.Usage.CompletionDetails.Reasoning, InputIncludesCache: true}, Cache: sdk.CacheInfo{Layer: "provider"}}
 	out.Cache.Hit = out.Usage.CacheReadTokens > 0
 	if len(r.Choices) == 0 {
 		return out

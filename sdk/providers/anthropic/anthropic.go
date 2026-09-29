@@ -274,7 +274,10 @@ func ToOpenAIResponse(r response) sdk.Response {
 			calls = append(calls, sdk.ToolCall{ID: p.ID, Name: p.Name, Arguments: string(p.Input)})
 		}
 	}
-	usage := sdk.Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.Input + r.Usage.OutputTokens, CacheReadTokens: r.Usage.CacheRead, CacheWriteTokens: r.Usage.CacheCreation}
+	// Anthropic counts input_tokens without the cache parts and reports no
+	// reasoning token count at all, so ReasoningTokens stays 0 rather than
+	// being estimated. InputIncludesCache stays false.
+	usage := sdk.Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.Input + r.Usage.OutputTokens + r.Usage.CacheRead + r.Usage.CacheCreation, CacheReadTokens: r.Usage.CacheRead, CacheWriteTokens: r.Usage.CacheCreation}
 	out := openai.ResponsesResponseFromParts(r.Model, r.StopReason, texts, calls, nil, usage)
 	out.Provider = "anthropic"
 	out.Cache = sdk.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}

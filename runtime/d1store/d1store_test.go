@@ -451,13 +451,13 @@ func TestEnsureTurnFooterAddsColumnsOnce(t *testing.T) {
 	if err := c.EnsureTurnFooter(ctx); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	if len(fake.extraTurnColumns) != 6 {
-		t.Fatalf("added %v, want the six footer columns", fake.extraTurnColumns)
+	if len(fake.extraTurnColumns) != 8 {
+		t.Fatalf("added %v, want the eight footer columns", fake.extraTurnColumns)
 	}
 	if err := c.EnsureTurnFooter(ctx); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
-	if len(fake.extraTurnColumns) != 6 {
+	if len(fake.extraTurnColumns) != 8 {
 		t.Fatalf("a second run added %v again", fake.extraTurnColumns)
 	}
 }

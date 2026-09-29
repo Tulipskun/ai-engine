@@ -85,6 +85,12 @@ type Outbound struct {
 	// it reports them. They are footer data, not live estimates.
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// ReasoningTokens is the output a model spent thinking, and
+	// InputIncludesCache says whether InputTokens already contains the cache
+	// parts. Without the flag the phone cannot label the two numbers and
+	// prints a cache count that looks bigger than the input it belongs to.
+	ReasoningTokens    int  `json:"reasoning_tokens,omitempty"`
+	InputIncludesCache bool `json:"input_includes_cache,omitempty"`
 	// ReasoningMs is the elapsed thinking time recorded for the reasoning event
 	// that produced this transient status. Raw reasoning text is never sent.
 	ReasoningMs int64 `json:"reasoning_ms,omitempty"`
@@ -302,19 +308,21 @@ func (t *Transport) Display(ctx context.Context, output sdk.Output) error {
 		return nil
 	}
 	frame := Outbound{
-		Kind:             FrameMessage,
-		SessionID:        output.SessionID,
-		Role:             "model",
-		Agent:            agentFor(output),
-		JobID:            output.Metadata[jobMetadataKey],
-		Text:             text,
-		Content:          []ContentPart{{Type: "text", Text: text}},
-		InputTokens:      output.Response.Usage.InputTokens,
-		OutputTokens:     output.Response.Usage.OutputTokens,
-		CacheReadTokens:  output.Response.Usage.CacheReadTokens,
-		CacheWriteTokens: output.Response.Usage.CacheWriteTokens,
-		Model:            output.Response.Model,
-		DurationMs:       turnDurationMs(nil),
+		Kind:               FrameMessage,
+		SessionID:          output.SessionID,
+		Role:               "model",
+		Agent:              agentFor(output),
+		JobID:              output.Metadata[jobMetadataKey],
+		Text:               text,
+		Content:            []ContentPart{{Type: "text", Text: text}},
+		InputTokens:        output.Response.Usage.InputTokens,
+		OutputTokens:       output.Response.Usage.OutputTokens,
+		CacheReadTokens:    output.Response.Usage.CacheReadTokens,
+		CacheWriteTokens:   output.Response.Usage.CacheWriteTokens,
+		ReasoningTokens:    output.Response.Usage.ReasoningTokens,
+		InputIncludesCache: output.Response.Usage.InputIncludesCache,
+		Model:              output.Response.Model,
+		DurationMs:         turnDurationMs(nil),
 	}
 	t.broadcast(output.SessionID, frame)
 	if frame.InputTokens > 0 || frame.OutputTokens > 0 {
@@ -509,6 +517,8 @@ func (t *Transport) sendAnswer(output sdk.Output, agent, jobID, text string, clo
 		frame.OutputTokens = output.Trace.Response.Usage.OutputTokens
 		frame.CacheReadTokens = output.Trace.Response.Usage.CacheReadTokens
 		frame.CacheWriteTokens = output.Trace.Response.Usage.CacheWriteTokens
+		frame.ReasoningTokens = output.Trace.Response.Usage.ReasoningTokens
+		frame.InputIncludesCache = output.Trace.Response.Usage.InputIncludesCache
 		frame.Model = output.Trace.Response.Model
 	}
 	frame.DurationMs = turnDurationMs(output.Trace)

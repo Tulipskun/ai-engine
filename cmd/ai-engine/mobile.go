@@ -564,6 +564,8 @@ func (m *mobileRuntime) PublishOutput(ctx context.Context, output sdk.Output) {
 	meta.OutputTokens = usage.OutputTokens
 	meta.CacheRead = usage.CacheReadTokens
 	meta.CacheWrite = usage.CacheWriteTokens
+	meta.ReasoningTokens = usage.ReasoningTokens
+	meta.InputIncludesCache = usage.InputIncludesCache
 	seq, err := m.client.AppendModelTurn(ctx, output.SessionID, "main", jobID, text, meta)
 	if err != nil {
 		log.Printf("mobile: mirror turn to D1 session=%s: %v", output.SessionID, err)

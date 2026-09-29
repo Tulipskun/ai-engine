@@ -155,6 +155,7 @@ func ResponsesResponseFromParts(model, status string, texts []string, toolCalls 
 	r.Usage.OutputTokens = usage.OutputTokens
 	r.Usage.TotalTokens = usage.TotalTokens
 	r.Usage.InputDetails.Cached = usage.CacheReadTokens
+	r.Usage.OutputDetails.Reasoning = usage.ReasoningTokens
 	if reasoning != nil && reasoning.Text != "" {
 		r.Output = append(r.Output, struct {
 			Type      string `json:"type"`

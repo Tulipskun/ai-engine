@@ -175,10 +175,11 @@ type candidate struct {
 type response struct {
 	Candidates []candidate `json:"candidates"`
 	Usage      struct {
-		Prompt int `json:"promptTokenCount"`
-		Output int `json:"candidatesTokenCount"`
-		Total  int `json:"totalTokenCount"`
-		Cached int `json:"cachedContentTokenCount"`
+		Prompt   int `json:"promptTokenCount"`
+		Output   int `json:"candidatesTokenCount"`
+		Total    int `json:"totalTokenCount"`
+		Cached   int `json:"cachedContentTokenCount"`
+		Thoughts int `json:"thoughtsTokenCount"`
 	} `json:"usageMetadata"`
 }
 
@@ -262,7 +263,17 @@ func cloneHeaders(in map[string]string) map[string]string {
 // ToOpenAIResponse converts a native Gemini response into sdk.Response
 // through the central OpenAI Responses shape.
 func ToOpenAIResponse(r response, model string) sdk.Response {
-	usage := sdk.Usage{InputTokens: r.Usage.Prompt, OutputTokens: r.Usage.Output, TotalTokens: r.Usage.Total, CacheReadTokens: r.Usage.Cached}
+	// promptTokenCount already contains cachedContentTokenCount, and
+	// candidatesTokenCount does not contain thoughtsTokenCount, so the answer
+	// text count stays r.Usage.Output and the thinking is reported beside it.
+	usage := sdk.Usage{
+		InputTokens:        r.Usage.Prompt,
+		OutputTokens:       r.Usage.Output,
+		TotalTokens:        r.Usage.Total,
+		CacheReadTokens:    r.Usage.Cached,
+		ReasoningTokens:    r.Usage.Thoughts,
+		InputIncludesCache: true,
+	}
 	if len(r.Candidates) == 0 {
 		out := openai.ResponsesResponseFromParts(model, "", nil, nil, nil, usage)
 		out.Provider = "gemini"

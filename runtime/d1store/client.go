@@ -447,12 +447,18 @@ type Turn struct {
 	// Footer of a model turn: which model answered, what it cost and how long
 	// it took, so the phone can draw it under that message and keep it after a
 	// restart (AX-095).
-	Model        string `json:"model"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
-	CacheRead    int    `json:"cache_read_tokens"`
-	CacheWrite   int    `json:"cache_write_tokens"`
-	DurationMs   int64  `json:"duration_ms"`
+	Model           string `json:"model"`
+	InputTokens     int    `json:"input_tokens"`
+	OutputTokens    int    `json:"output_tokens"`
+	CacheRead       int    `json:"cache_read_tokens"`
+	CacheWrite      int    `json:"cache_write_tokens"`
+	ReasoningTokens int    `json:"reasoning_tokens"`
+	DurationMs      int64  `json:"duration_ms"`
+	// Whether the provider's input count already contains the cache parts, so
+	// the phone can label the two numbers instead of printing them as rivals.
+	// D1 stores this as an INTEGER column, so it arrives as 0/1 rather than a
+	// JSON boolean, and unmarshalling a number into a bool is an error.
+	InputIncludesCache int `json:"input_includes_cache"`
 }
 
 // Node is the quick-tunnel announcement the phone reads to find the daemon.
@@ -623,7 +629,7 @@ func (c *Client) Turns(ctx context.Context, sessionID string, beforeSeq int64, l
 		beforeSeq = 1<<62 - 1
 	}
 	res, err := c.query(ctx,
-		`SELECT seq, role, agent, job_id, text, created_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms FROM turns
+		`SELECT seq, role, agent, job_id, text, created_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, input_includes_cache, duration_ms FROM turns
 		 WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`,
 		[]string{sessionID, fmt.Sprint(beforeSeq), fmt.Sprint(limit)})
 	if err != nil {
@@ -654,7 +660,20 @@ type TurnMeta struct {
 	OutputTokens int
 	CacheRead    int
 	CacheWrite   int
-	DurationMs   int64
+	// ReasoningTokens counts the output a model spent thinking, and
+	// InputIncludesCache records whether InputTokens already contains the cache
+	// parts, so the phone can label the two instead of printing them as rivals.
+	ReasoningTokens    int
+	InputIncludesCache bool
+	DurationMs         int64
+}
+
+// boolInt renders a flag for the SQL driver, which has no boolean.
+func boolInt(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 // AppendModelTurn mirrors one answered turn together with the footer data, and
@@ -702,11 +721,13 @@ func (c *Client) appendTurn(ctx context.Context, sessionID, role, agent, jobID, 
 	// The next seq is read inside the same statement so a turn can never land on
 	// a duplicate (session_id, seq) when two phones finish at the same moment.
 	inserted, err := c.query(ctx,
-		`INSERT INTO turns(session_id, seq, role, agent, job_id, text, created_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms)
-		 SELECT ?, COALESCE((SELECT MAX(seq) + 1 FROM turns WHERE session_id = ?), 1), ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?, ?, ?`,
+		`INSERT INTO turns(session_id, seq, role, agent, job_id, text, created_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, input_includes_cache, duration_ms)
+		 SELECT ?, COALESCE((SELECT MAX(seq) + 1 FROM turns WHERE session_id = ?), 1), ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?`,
 		[]string{sessionID, sessionID, role, agent, jobID, text, meta.Model,
 			strconv.Itoa(meta.InputTokens), strconv.Itoa(meta.OutputTokens),
-			strconv.Itoa(meta.CacheRead), strconv.Itoa(meta.CacheWrite), strconv.FormatInt(meta.DurationMs, 10)})
+			strconv.Itoa(meta.CacheRead), strconv.Itoa(meta.CacheWrite),
+			strconv.Itoa(meta.ReasoningTokens), boolInt(meta.InputIncludesCache),
+			strconv.FormatInt(meta.DurationMs, 10)})
 	if err != nil {
 		return 0, err
 	}
@@ -794,6 +815,8 @@ var turnFooterColumns = []struct{ name, ddl string }{
 	{"input_tokens", "ALTER TABLE turns ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"},
 	{"output_tokens", "ALTER TABLE turns ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0"},
 	{"cache_read_tokens", "ALTER TABLE turns ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0"},
+	{"reasoning_tokens", "ALTER TABLE turns ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0"},
+	{"input_includes_cache", "ALTER TABLE turns ADD COLUMN input_includes_cache INTEGER NOT NULL DEFAULT 0"},
 	{"cache_write_tokens", "ALTER TABLE turns ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0"},
 	{"duration_ms", "ALTER TABLE turns ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"},
 }
