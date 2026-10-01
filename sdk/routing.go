@@ -240,12 +240,7 @@ func (s *Session) ID() string { return s.config.ID }
 func (s *Session) Config() SessionConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	c := s.config
-	if c.Temperature != nil {
-		v := *c.Temperature
-		c.Temperature = &v
-	}
-	return c
+	return s.config.clone()
 }
 func (s *Session) APIKey() (string, error) {
 	s.mu.RLock()

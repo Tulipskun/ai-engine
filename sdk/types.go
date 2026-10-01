@@ -78,7 +78,17 @@ type Request struct {
 	Temperature     *float64      `json:"temperature,omitempty"`
 	ThinkingLevel   ThinkingLevel `json:"thinking_level,omitempty"`
 	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
-	Stream          bool          `json:"stream,omitempty"`
+	// The rest of the knobs a provider accepts. Every one of them is optional
+	// and stays nil when the user never set it, because an omitted knob lets the
+	// provider apply its own default while a zero we invented is a real value the
+	// model was asked to obey (CHANGE-077).
+	TopP             *float64 `json:"top_p,omitempty"`
+	TopK             *float64 `json:"top_k,omitempty"`
+	StopSequences    []string `json:"stop_sequences,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	Stream           bool     `json:"stream,omitempty"`
 }
 
 type Usage struct {
@@ -202,6 +212,142 @@ type SessionConfig struct {
 	Temperature   *float64      `json:"temperature,omitempty"`
 	AgentMode     AgentMode     `json:"agent_mode,omitempty"`
 	Workspace     string        `json:"workspace,omitempty"`
+	// Same optional knobs as Request, kept per session so a conversation can
+	// come back the way it was asked to answer (CHANGE-077).
+	TopP             *float64 `json:"top_p,omitempty"`
+	TopK             *float64 `json:"top_k,omitempty"`
+	StopSequences    []string `json:"stop_sequences,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	// MaxOutputTokens is 0 for "no cap", which is also what leaves the limit to
+	// the provider's own default (CHANGE-077).
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+}
+
+// applyGeneration fills the knobs the caller left unset from the session's own
+// settings. A value the turn carries itself always wins, so one turn can ask for
+// something different without changing the conversation. This is the only place
+// the two structs are reconciled, which is what keeps a newly added knob from
+// being silently dropped on one of the paths (CHANGE-077).
+//
+// Everything is copied rather than pointed at, so a request can never reach back
+// through one of these fields into the settings it was built from.
+func (c SessionConfig) applyGeneration(req *Request) {
+	if req == nil {
+		return
+	}
+	if req.ThinkingLevel == "" {
+		req.ThinkingLevel = c.ThinkingLevel
+	}
+	if req.Temperature == nil {
+		req.Temperature = cloneFloat(c.Temperature)
+	}
+	if req.TopP == nil {
+		req.TopP = cloneFloat(c.TopP)
+	}
+	if req.TopK == nil {
+		req.TopK = cloneFloat(c.TopK)
+	}
+	if len(req.StopSequences) == 0 && len(c.StopSequences) > 0 {
+		req.StopSequences = append([]string(nil), c.StopSequences...)
+	}
+	if req.PresencePenalty == nil {
+		req.PresencePenalty = cloneFloat(c.PresencePenalty)
+	}
+	if req.FrequencyPenalty == nil {
+		req.FrequencyPenalty = cloneFloat(c.FrequencyPenalty)
+	}
+	if req.Seed == nil {
+		req.Seed = cloneInt64(c.Seed)
+	}
+	if req.MaxOutputTokens == 0 {
+		req.MaxOutputTokens = c.MaxOutputTokens
+	}
+}
+
+// Generation returns a copy of the session's knobs, for handing a worker the
+// same generation settings its parent runs on.
+func (c SessionConfig) Generation() GenerationSettings {
+	return GenerationSettings{
+		ThinkingLevel:    c.ThinkingLevel,
+		Temperature:      c.Temperature,
+		TopP:             c.TopP,
+		TopK:             c.TopK,
+		StopSequences:    c.StopSequences,
+		PresencePenalty:  c.PresencePenalty,
+		FrequencyPenalty: c.FrequencyPenalty,
+		Seed:             c.Seed,
+	}
+}
+
+// inheritGeneration copies the generation knobs onto c from a session the caller
+// is about to spawn work for. A worker answers the same conversation as its
+// parent, so it runs on the same knobs unless its own config says otherwise —
+// and listing them here once is what stops a newly added knob from being left
+// behind on the worker path (CHANGE-077).
+func (c *SessionConfig) inheritGeneration(parent SessionConfig) {
+	c.ThinkingLevel = parent.ThinkingLevel
+	c.Temperature = cloneFloat(parent.Temperature)
+	c.TopP = cloneFloat(parent.TopP)
+	c.TopK = cloneFloat(parent.TopK)
+	c.PresencePenalty = cloneFloat(parent.PresencePenalty)
+	c.FrequencyPenalty = cloneFloat(parent.FrequencyPenalty)
+	c.Seed = cloneInt64(parent.Seed)
+	if parent.StopSequences != nil {
+		c.StopSequences = append([]string(nil), parent.StopSequences...)
+	} else {
+		c.StopSequences = nil
+	}
+	if parent.MaxOutputTokens > 0 {
+		c.MaxOutputTokens = parent.MaxOutputTokens
+	}
+}
+
+// clone returns a copy that shares no pointer and no slice backing with c, so
+// a caller holding one can never reach back into the session's own settings.
+// Every knob is a pointer or a slice, so a shallow copy would alias them all.
+func (c SessionConfig) clone() SessionConfig {
+	out := c
+	out.Temperature = cloneFloat(c.Temperature)
+	out.TopP = cloneFloat(c.TopP)
+	out.TopK = cloneFloat(c.TopK)
+	out.PresencePenalty = cloneFloat(c.PresencePenalty)
+	out.FrequencyPenalty = cloneFloat(c.FrequencyPenalty)
+	out.Seed = cloneInt64(c.Seed)
+	if c.StopSequences != nil {
+		out.StopSequences = append([]string(nil), c.StopSequences...)
+	}
+	return out
+}
+
+func cloneFloat(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func cloneInt64(v *int64) *int64 {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+// GenerationSettings is the transport- and config-facing shape of the knobs a
+// provider accepts. Pointers are how "not set" is told apart from zero.
+type GenerationSettings struct {
+	ThinkingLevel    ThinkingLevel `json:"thinking_level,omitempty"`
+	Temperature      *float64      `json:"temperature,omitempty"`
+	TopP             *float64      `json:"top_p,omitempty"`
+	TopK             *float64      `json:"top_k,omitempty"`
+	StopSequences    []string      `json:"stop_sequences,omitempty"`
+	PresencePenalty  *float64      `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64      `json:"frequency_penalty,omitempty"`
+	Seed             *int64        `json:"seed,omitempty"`
 }
 
 // AgentMode selects how a session answers: AgentModeMain plans through the

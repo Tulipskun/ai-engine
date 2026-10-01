@@ -156,11 +156,16 @@ func BuildResponsesRequest(req sdk.Request) map[string]any {
 	if req.Temperature != nil {
 		b["temperature"] = *req.Temperature
 	}
+	if req.TopP != nil {
+		b["top_p"] = *req.TopP
+	}
 	if req.MaxOutputTokens > 0 {
 		b["max_output_tokens"] = req.MaxOutputTokens
 	}
-	if req.ThinkingLevel != "" && req.ThinkingLevel != sdk.ThinkingNone {
-		b["reasoning"] = map[string]any{"effort": string(req.ThinkingLevel)}
+	// /responses takes the sampling knobs next to reasoning without complaint, so
+	// only the parameters it does not have at all are left out.
+	if effort := reasoningEffort(req); effort != "" {
+		b["reasoning"] = map[string]any{"effort": effort}
 	}
 	addStreamUsage(b, req.Stream)
 	return b
@@ -213,14 +218,83 @@ func BuildChatRequest(req sdk.Request) map[string]any {
 		}
 		b["tools"] = tools
 	}
-	if req.Temperature != nil {
-		b["temperature"] = *req.Temperature
-	}
-	if req.MaxOutputTokens > 0 {
-		b["max_tokens"] = req.MaxOutputTokens
+	effort := reasoningEffort(req)
+	if effort != "" {
+		// A model that thinks before it answers accepts only the default
+		// sampling parameters on this endpoint: sending temperature, top_p or
+		// either penalty alongside reasoning_effort is refused. Leaving them
+		// out is the same as asking for the default.
+		b["reasoning_effort"] = effort
+		if req.MaxOutputTokens > 0 {
+			// max_tokens is the old name and is refused by these models.
+			b["max_completion_tokens"] = req.MaxOutputTokens
+		}
+	} else {
+		if req.Temperature != nil {
+			b["temperature"] = *req.Temperature
+		}
+		if req.TopP != nil {
+			b["top_p"] = *req.TopP
+		}
+		if req.PresencePenalty != nil {
+			b["presence_penalty"] = *req.PresencePenalty
+		}
+		if req.FrequencyPenalty != nil {
+			b["frequency_penalty"] = *req.FrequencyPenalty
+		}
+		if req.Seed != nil {
+			b["seed"] = *req.Seed
+		}
+		if len(req.StopSequences) > 0 {
+			b["stop"] = req.StopSequences
+		}
+		if req.MaxOutputTokens > 0 {
+			b["max_tokens"] = req.MaxOutputTokens
+		}
 	}
 	addStreamUsage(b, req.Stream)
 	return b
+}
+
+// reasoningEffort maps the session's thinking level onto what a provider is
+// asked for. "none" and "off" both mean "do not ask for reasoning at all", which
+// is expressed by leaving the key out entirely rather than by an empty string.
+func reasoningEffort(req sdk.Request) string {
+	switch req.ThinkingLevel {
+	case sdk.ThinkingLow, sdk.ThinkingMedium, sdk.ThinkingHigh:
+		return string(req.ThinkingLevel)
+	default:
+		return ""
+	}
+}
+
+// SamplingKnobs are the parameters OpenAI has no place for but Gemini and
+// Anthropic do. They are kept out of the canonical map on purpose: that map is
+// sent to OpenAI verbatim as the HTTP body, so an extra key here would be a
+// rejected parameter rather than a carried setting. Adapters that want these
+// merge this into their own payload instead.
+func SamplingKnobs(req sdk.Request) map[string]any {
+	b := map[string]any{}
+	carrySamplingKnobs(b, req)
+	return b
+}
+
+func carrySamplingKnobs(b map[string]any, req sdk.Request) {
+	if req.TopK != nil {
+		b["top_k"] = *req.TopK
+	}
+	if len(req.StopSequences) > 0 {
+		b["stop"] = req.StopSequences
+	}
+	if req.PresencePenalty != nil {
+		b["presence_penalty"] = *req.PresencePenalty
+	}
+	if req.FrequencyPenalty != nil {
+		b["frequency_penalty"] = *req.FrequencyPenalty
+	}
+	if req.Seed != nil {
+		b["seed"] = *req.Seed
+	}
 }
 func buildChat(req sdk.Request) map[string]any { return BuildChatRequest(req) }
 func ParseResponsesResponse(r ResponsesResponse) sdk.Response {

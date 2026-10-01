@@ -59,6 +59,13 @@ func (s *SessionDB) init() error {
 			key_index INTEGER NOT NULL,
 			thinking_level TEXT NOT NULL,
 			temperature REAL,
+			top_p REAL,
+			top_k REAL,
+			stop_sequences TEXT,
+			presence_penalty REAL,
+			frequency_penalty REAL,
+			seed INTEGER,
+			max_output_tokens INTEGER NOT NULL DEFAULT 0,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -140,6 +147,13 @@ func (s *SessionDB) ensureSessionColumns() error {
 		"cache_read_tokens INTEGER NOT NULL DEFAULT 0",
 		"cache_write_tokens INTEGER NOT NULL DEFAULT 0",
 		"cache_hits INTEGER NOT NULL DEFAULT 0",
+		"top_p REAL",
+		"top_k REAL",
+		"stop_sequences TEXT",
+		"presence_penalty REAL",
+		"frequency_penalty REAL",
+		"seed INTEGER",
+		"max_output_tokens INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, column := range columns {
 		if _, err := s.db.Exec("ALTER TABLE sessions ADD COLUMN " + column); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
@@ -179,6 +193,38 @@ func nullableString(v string) any {
 	return v
 }
 
+func nullableInt64(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// nullableStrings stores the stop sequences as one JSON array so the column stays
+// a single value; an unset list is NULL rather than an empty array, because
+// "stop on nothing" and "never set" must not read the same after a round trip.
+func nullableStrings(v []string) any {
+	if len(v) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return string(encoded)
+}
+
+func decodeStrings(v string) []string {
+	if v == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(v), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 func boolInt(v bool) int {
 	if v {
 		return 1
@@ -191,14 +237,21 @@ func (s *SessionDB) SaveSession(config SessionConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO sessions(id,provider,model,key_index,thinking_level,temperature,agent_mode,workspace,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO sessions(id,provider,model,key_index,thinking_level,temperature,top_p,top_k,stop_sequences,presence_penalty,frequency_penalty,seed,max_output_tokens,agent_mode,workspace,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			provider=excluded.provider,
 			model=excluded.model,
 			key_index=excluded.key_index,
 			thinking_level=excluded.thinking_level,
 			temperature=excluded.temperature,
+			top_p=excluded.top_p,
+			top_k=excluded.top_k,
+			stop_sequences=excluded.stop_sequences,
+			presence_penalty=excluded.presence_penalty,
+			frequency_penalty=excluded.frequency_penalty,
+			seed=excluded.seed,
+			max_output_tokens=excluded.max_output_tokens,
 			agent_mode=excluded.agent_mode,
 			workspace=excluded.workspace,
 			updated_at=excluded.updated_at`,
@@ -208,6 +261,13 @@ func (s *SessionDB) SaveSession(config SessionConfig) error {
 		config.KeyIndex,
 		config.ThinkingLevel,
 		nullableFloat(config.Temperature),
+		nullableFloat(config.TopP),
+		nullableFloat(config.TopK),
+		nullableStrings(config.StopSequences),
+		nullableFloat(config.PresencePenalty),
+		nullableFloat(config.FrequencyPenalty),
+		nullableInt64(config.Seed),
+		config.MaxOutputTokens,
 		string(config.AgentMode),
 		nullableString(config.Workspace),
 		now,
@@ -220,11 +280,15 @@ func (s *SessionDB) LoadSession(sessionID string) (SessionConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var config SessionConfig
-	var temperature sql.NullFloat64
+	var temperature, topP, topK, presence, frequency sql.NullFloat64
+	var stopSequences sql.NullString
+	var seed sql.NullInt64
 	var agentMode string
 	var workspace sql.NullString
 	err := s.db.QueryRow(`
-		SELECT id,provider,model,key_index,thinking_level,temperature,agent_mode,workspace
+		SELECT id,provider,model,key_index,thinking_level,temperature,
+		       top_p,top_k,stop_sequences,presence_penalty,frequency_penalty,seed,
+		       max_output_tokens,agent_mode,workspace
 		FROM sessions WHERE id=?`, sessionID).Scan(
 		&config.ID,
 		&config.Provider,
@@ -232,6 +296,13 @@ func (s *SessionDB) LoadSession(sessionID string) (SessionConfig, error) {
 		&config.KeyIndex,
 		&config.ThinkingLevel,
 		&temperature,
+		&topP,
+		&topK,
+		&stopSequences,
+		&presence,
+		&frequency,
+		&seed,
+		&config.MaxOutputTokens,
 		&agentMode,
 		&workspace,
 	)
@@ -241,6 +312,29 @@ func (s *SessionDB) LoadSession(sessionID string) (SessionConfig, error) {
 	if temperature.Valid {
 		v := temperature.Float64
 		config.Temperature = &v
+	}
+	if topP.Valid {
+		v := topP.Float64
+		config.TopP = &v
+	}
+	if topK.Valid {
+		v := topK.Float64
+		config.TopK = &v
+	}
+	if stopSequences.Valid {
+		config.StopSequences = decodeStrings(stopSequences.String)
+	}
+	if presence.Valid {
+		v := presence.Float64
+		config.PresencePenalty = &v
+	}
+	if frequency.Valid {
+		v := frequency.Float64
+		config.FrequencyPenalty = &v
+	}
+	if seed.Valid {
+		v := seed.Int64
+		config.Seed = &v
 	}
 	config.AgentMode = AgentMode(agentMode)
 	if workspace.Valid {

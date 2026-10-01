@@ -117,6 +117,95 @@ func (s *Session) SetKeyIndex(index int) error {
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.KeyIndex = index; return nil })
 }
+
+// SetMaxOutputTokens caps how long an answer may run. Zero means no cap, which
+// leaves the limit to the provider's own default rather than inventing one.
+func (s *Session) SetMaxOutputTokens(tokens int) error {
+	if tokens < 0 {
+		return errors.New("sdk: max output tokens must not be negative")
+	}
+	return s.updateConfig(func(config *SessionConfig) error { config.MaxOutputTokens = tokens; return nil })
+}
+
+// Every setter below validates before it stores, because a knob that a provider
+// will reject is better refused here than turned into a failed turn later
+// (CHANGE-077).
+
+func (s *Session) SetTopP(v float64) error {
+	if err := checkRange("top_p", v, 0, 1); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *SessionConfig) error { config.TopP = cloneFloat(&v); return nil })
+}
+func (s *Session) ClearTopP() error {
+	return s.updateConfig(func(config *SessionConfig) error { config.TopP = nil; return nil })
+}
+
+func (s *Session) SetTopK(v float64) error {
+	if err := checkRange("top_k", v, 0, 1); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *SessionConfig) error { config.TopK = cloneFloat(&v); return nil })
+}
+func (s *Session) ClearTopK() error {
+	return s.updateConfig(func(config *SessionConfig) error { config.TopK = nil; return nil })
+}
+
+func (s *Session) SetStopSequences(seq []string) error {
+	cleaned := make([]string, 0, len(seq))
+	for _, entry := range seq {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			cleaned = append(cleaned, entry)
+		}
+	}
+	if len(cleaned) == 0 {
+		return s.ClearStopSequences()
+	}
+	return s.updateConfig(func(config *SessionConfig) error { config.StopSequences = cleaned; return nil })
+}
+func (s *Session) ClearStopSequences() error {
+	return s.updateConfig(func(config *SessionConfig) error { config.StopSequences = nil; return nil })
+}
+
+func (s *Session) SetPresencePenalty(v float64) error {
+	if err := checkRange("presence_penalty", v, -2, 2); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *SessionConfig) error { config.PresencePenalty = cloneFloat(&v); return nil })
+}
+func (s *Session) ClearPresencePenalty() error {
+	return s.updateConfig(func(config *SessionConfig) error { config.PresencePenalty = nil; return nil })
+}
+
+func (s *Session) SetFrequencyPenalty(v float64) error {
+	if err := checkRange("frequency_penalty", v, -2, 2); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *SessionConfig) error { config.FrequencyPenalty = cloneFloat(&v); return nil })
+}
+func (s *Session) ClearFrequencyPenalty() error {
+	return s.updateConfig(func(config *SessionConfig) error { config.FrequencyPenalty = nil; return nil })
+}
+
+func (s *Session) SetSeed(seed int64) error {
+	return s.updateConfig(func(config *SessionConfig) error { config.Seed = cloneInt64(&seed); return nil })
+}
+func (s *Session) ClearSeed() error {
+	return s.updateConfig(func(config *SessionConfig) error { config.Seed = nil; return nil })
+}
+
+// checkRange rejects a value no provider would accept, and rejects NaN and Inf
+// too: they survive a range comparison and would reach the HTTP body as garbage.
+func checkRange(name string, v, lo, hi float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return fmt.Errorf("sdk: %s must be a number", name)
+	}
+	if v < lo || v > hi {
+		return fmt.Errorf("sdk: %s must be between %g and %g, got %g", name, lo, hi, v)
+	}
+	return nil
+}
+
 func validThinkingLevel(level ThinkingLevel) bool {
 	switch level {
 	case ThinkingNone, ThinkingLow, ThinkingMedium, ThinkingHigh:
@@ -131,11 +220,7 @@ func (s *Session) updateConfig(update func(*SessionConfig) error) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	config := s.config
-	if config.Temperature != nil {
-		v := *config.Temperature
-		config.Temperature = &v
-	}
+	config := s.config.clone()
 	if err := update(&config); err != nil {
 		return err
 	}

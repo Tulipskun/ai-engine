@@ -18,7 +18,7 @@ CON-008 — ห้ามลดหรือเอา requirement ที่มี�
 
 CON-009 — หลีกเลี่ยงการ refactor ที่ไม่เกี่ยวข้องขณะ implement requirement change
 
-CON-010 — ห้ามนำเส้นทาง model-call แบบ streaming กลับมาใช้; `Generate` เป็นเส้นทาง model call เพียงเส้นทางเดียว
+CON-010 — **ยกเลิก (CHANGE-077)**: ข้อห้าม streaming ขัดกับ REQ-046(6) ที่กำหนดให้ daemon stream ทุก turn และ REQ-048(12) ที่กำหนดให้อ่าน usage จาก chunk ปิดท้ายของ stream ข้อกำหนดเดิมจึงล้าสละกับตัวเอง และ implementation ที่ใช้งานจริงไม่เคยถอยกลับ (`main.go` ตั้ง `Stream: true` มาตั้งแต่ CHANGE-058) เหลือข้อกำหนดที่ยังบังคับจริงคือ model call ต้องอยู่ใน SDK เท่านั้น ห้ามให้ adapter หรือ transport เรียก provider นอกเส้นทาง `sdk.Agent` (CON-004)
 
 CON-011 — **ยกเลิก (CHANGE-087)**: attachment file store ถูกลบทั้งแพ็กเกจ (`runtime/filestore`, `config/attachment.json`, `config:attachment`) CON-002/CON-003 ยังคงบังคับกับ session data และ CON-001 ยังคงบังคับว่า path/limits กำหนดใน `config/*.json` เท่านั้น
 

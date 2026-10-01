@@ -62,8 +62,30 @@ func (c *Client) Name() string { return "anthropic" }
 // build converts via the central OpenAI Responses interface:
 // sdk.Request -> OpenAI canonical -> Anthropic native.
 func build(req sdk.Request) map[string]any {
-	return BuildFromOpenAI(openai.BuildResponsesRequest(req))
+	canonical := openai.BuildResponsesRequest(req)
+	// top_k and stop are not OpenAI parameters so they never entered the
+	// canonical map, but this map is only an intermediate on the way to Anthropic,
+	// which does take both.
+	if req.TopK != nil {
+		canonical["top_k"] = *req.TopK
+	}
+	if len(req.StopSequences) > 0 {
+		canonical["stop"] = req.StopSequences
+	}
+	return BuildFromOpenAI(canonical)
 }
+
+const (
+	// minThinkingBudget is the smallest budget Anthropic accepts for extended
+	// thinking; anything under it is refused.
+	minThinkingBudget = 1024
+	// thinkingAnswerRoom is what is added to the budget so the answer itself
+	// still fits inside max_tokens.
+	thinkingAnswerRoom = 1024
+	// defaultMaxTokens is used only when no cap was set anywhere, because this
+	// endpoint requires the field and will not take zero.
+	defaultMaxTokens = 4096
+)
 
 // BuildFromOpenAI translates a canonical OpenAI Responses request map
 // (see openai.BuildResponsesRequest) into an Anthropic /messages payload.
@@ -74,15 +96,38 @@ func BuildFromOpenAI(openAIReq map[string]any) map[string]any {
 	if sys := openai.InstructionsOf(openAIReq); sys != "" {
 		b["system"] = sys
 	}
-	if temp, ok := openai.TemperatureOf(openAIReq); ok {
-		b["temperature"] = temp
-	}
 	if effort := openai.ReasoningEffortOf(openAIReq); effort != "" && effort != string(sdk.ThinkingNone) {
-		bud := map[string]int{"low": 2048, "medium": 4096, "high": 8192}[effort]
-		b["thinking"] = map[string]any{"type": "enabled", "budget_tokens": bud}
-		if maxTokens <= bud {
-			b["max_tokens"] = bud + max(1024, maxTokens)
+		// Extended thinking pins the sampling knobs: temperature has to stay at
+		// its default while thinking is on, and any other value is refused. Not
+		// sending the key is how "leave it at the default" is said.
+		budget := map[string]int{"low": 2048, "medium": 4096, "high": 8192}[effort]
+		if budget < minThinkingBudget {
+			budget = minThinkingBudget
 		}
+		// The budget is drawn from max_tokens, so it has to be smaller than it or
+		// there is no room left for the answer.
+		if maxTokens <= budget {
+			maxTokens = budget + thinkingAnswerRoom
+		}
+		b["max_tokens"] = maxTokens
+		b["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+	} else {
+		if temp, ok := openai.TemperatureOf(openAIReq); ok {
+			b["temperature"] = temp
+		}
+		if maxTokens <= 0 {
+			// max_tokens is required here and zero is not a valid value for it.
+			b["max_tokens"] = defaultMaxTokens
+		}
+	}
+	if topP, ok := openai.TopPOf(openAIReq); ok {
+		b["top_p"] = topP
+	}
+	if topK, ok := openai.FloatOf(openAIReq, "top_k"); ok {
+		b["top_k"] = topK
+	}
+	if stop := openai.StopSequencesOf(openAIReq); len(stop) > 0 {
+		b["stop_sequences"] = stop
 	}
 	var msgs []any
 	for _, item := range openai.InputItemsOf(openAIReq) {

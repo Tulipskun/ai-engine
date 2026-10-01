@@ -1255,3 +1255,40 @@ Status: accepted
 - CHANGE-094 (2026-09-28) — Remove obsolete main-agent JEV field wiring.
 
 - CHANGE-095 (2026-09-28) — Enforce the external executor boundary for screen control. ai-engine's screen_control tool only delegates a screen-control goal to the separately running local JEV runtime via JEV_LOCAL_URL and returns JEV's result; it does not call AIxodia, Accessibility APIs, or execute pointer/screen actions itself. AIxodia remains frontend-only. The external JEV runtime is not stored in this repository.
+
+## CHANGE-077: ค่าตั้งการ generate มีอยู่ในโค้ดแต่ไม่มีทางตั้ง และ provider บางตัวถูกส่งค่าผิด
+New: (1) ค่าตั้ง generation ที่ SDK รองรับอยู่แล้ว (`sdk.Request.Temperature`,
+`ThinkingLevel`) ไม่เคยมี writer นอกเทสต์สำหรับ main agent — `cmd/ai-engine/main.go`
+สร้าง `SessionConfig` ที่บูตแค่ provider/model ทำให้ค่าทั้งสองเป็น `nil`/`""` ตลอดอายุ
+โปรแกรม แม้ `sdk/router_client.go` จะ merge ค่าจาก session เข้า request ได้ถูกต้องแล้ว
+adapter ทั้งสี่ก็อ่านค่าไปสร้าง body ได้ครบ แต่ไม่เคยมีค่าให้อ่าน ทางเดียวที่ใช้ได้จริงคือ
+`config/system.json` → `sub_agent.*` ซึ่งไม่มีเอกสาร ใช้ได้เฉพาะ sub agent และต้อง restart
+(2) mobile frame และ admin API ไม่มี field สำหรับค่าตั้งเหล่านี้เลย และ
+`PATCH /api/sessions/:id` ใช้ `DisallowUnknownFields` มือถือที่ส่ง `temperature` มาจะ
+ได้ 400 — ค่าที่ REQ-030 กำหนดให้เก็บเป็น top-level field ของ session จึงตั้งจากมือถือไม่ได้
+แม้ REQ-027/REQ-028 จะระบุว่ามีปุ่ม thinking/temperature อยู่แล้ว แต่อยู่บน Discord
+transport ที่ถูกถอดออกไปแล้ว (CHANGE-059)
+(3) `openai.BuildChatRequest` ไม่มีกิ่ง reasoning เลย ค่า reasoning จึงหายไปเงียบทุกครั้งที่
+dialect เป็น chat/completions ซึ่งเป็น dialect หลักของ gateway ทุกตัวที่ไม่ใช่
+api.openai.com และของ OpenCode chat fallback (REQ-046(6) กำหนดให้เลือก dialect ตาม
+endpoint อยู่แล้ว)
+(4) `anthropic.BuildFromOpenAI` ส่ง `temperature` คู่กับ `thinking` เสมอ ซึ่งขัดกับกฎของ
+Anthropic เอง (เปิด extended thinking แล้ว temperature ต้องเป็นค่าเริ่มต้น) และ budget
+ที่คำนวณจาก effort อาจต่ำกว่าขั้นต่ำ 1024 ที่ Anthropic บังคับ
+(5) `SystemConfig.MaxOutputTokens` ถูก validate แล้วทิ้ง ไม่เคยไปถึง request
+(6) `Model.SupportsThinking` ถูกเขียนครั้งเดียวที่ Gemini แล้วไม่มีผู้อ่านเลย รวมถึง
+ไม่ถูกส่งใน `ModelView` ไปมือถือ ส่วน `SupportsTemperature` ถูกอ่านเพื่อส่งต่ออย่างเดียว
+แต่ไม่เคยถูกใช้ gate ว่าโมเดลรับค่านั้นหรือไม่
+(7) `Session.RotateAPIKey` ไม่มีผู้เรียกนอกเทสต์ key ตายหนึ่งตัวจึงทำให้ทั้งเทิร์นล้ม
+ทั้งที่ `KeyPool` รออยู่ และ `config/entry.json` ที่บูตไม่ได้ถ้าไม่มีไฟล์นี้ไม่มีตัวอย่างแม้แต่
+ไฟล์เดียวใน repository
+Reason: ผู้ใช้ขอให้ปรับ AI engine ให้ใช้งานได้จริงและเพิ่มการตั้ง reasoning/temperature
+พร้อมพารามิเตอร์ที่ provider รองรับ — ตรวจโดยไล่จาก config ผ่าน session, request,
+adapter ไปจนถึง HTTP body พบว่าช่วงกลางต่อและช่วงท้ายต่อกันสมบูรณ์ แต่ไม่มีใครเปิดน้ำ
+Impact: sdk/types.go, sdk/session_settings.go, sdk/session_db.go,
+sdk/router_client.go, sdk/subagent.go, sdk/providers/openai,
+sdk/providers/anthropic, sdk/providers/gemini, sdk/providers/opencode,
+runtime/system_config.go, runtime/provider_manager.go, cmd/ai-engine/main.go,
+cmd/ai-engine/admin_store.go, transport/mobile/admin.go,
+transport/mobile/history.go, requirements/constraints.md (CON-010 ยกเลิก),
+AIxodia (UI ตั้งค่าบนมือถือ)

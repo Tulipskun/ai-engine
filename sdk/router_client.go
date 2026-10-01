@@ -105,13 +105,7 @@ func (c *RouterClient) Generate(ctx context.Context, session *Session, req Reque
 	if len(req.Messages) == 0 {
 		req.Messages = session.History()
 	}
-	if req.ThinkingLevel == "" {
-		req.ThinkingLevel = cfg.ThinkingLevel
-	}
-	if req.Temperature == nil && cfg.Temperature != nil {
-		v := *cfg.Temperature
-		req.Temperature = &v
-	}
+	cfg.applyGeneration(&req)
 	requestID, recordErr := session.RecordRequest(1, req)
 	if recordErr != nil {
 		return Response{}, recordErr
@@ -215,13 +209,7 @@ func (c *RouterClient) Stream(ctx context.Context, session *Session, req Request
 	if len(req.Messages) == 0 {
 		req.Messages = session.History()
 	}
-	if req.ThinkingLevel == "" {
-		req.ThinkingLevel = cfg.ThinkingLevel
-	}
-	if req.Temperature == nil && cfg.Temperature != nil {
-		v := *cfg.Temperature
-		req.Temperature = &v
-	}
+	cfg.applyGeneration(&req)
 	return c.streamOnce(ctx, session, p, req)
 }
 func (c *RouterClient) streamOnce(ctx context.Context, session *Session, p Provider, req Request) (<-chan Event, error) {

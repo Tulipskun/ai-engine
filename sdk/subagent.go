@@ -538,7 +538,10 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Resp
 	if store == nil {
 		return Response{}, errors.New("sdk: parent session is not persistent")
 	}
-	worker, err := OpenSession(SessionDBPath(store.Dir(), workerID), SessionConfig{ID: workerID, Provider: ProviderID(provider), Model: model, KeyIndex: parentCfg.KeyIndex, ThinkingLevel: chooseThinking(m.cfg.ThinkingLevel, parentCfg.ThinkingLevel), Temperature: parentCfg.Temperature, Workspace: workspace}, keys)
+	workerCfg := SessionConfig{ID: workerID, Provider: ProviderID(provider), Model: model, KeyIndex: parentCfg.KeyIndex, Workspace: workspace}
+	workerCfg.inheritGeneration(parentCfg)
+	workerCfg.ThinkingLevel = chooseThinking(m.cfg.ThinkingLevel, parentCfg.ThinkingLevel)
+	worker, err := OpenSession(SessionDBPath(store.Dir(), workerID), workerCfg, keys)
 	if err != nil {
 		return Response{}, err
 	}
@@ -562,7 +565,10 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Resp
 		prompt += "\n\nProject requirements from the repository:\n" + requirements
 	}
 	workerAgent := &Agent{Client: m.agent.Client, Tools: m.agent.Tools, MaxRetries: m.agent.MaxRetries, DisablePlanning: true, SubAgentConfig: SubAgentConfig{Enabled: false}}
-	req := Request{Provider: ProviderID(provider), Model: model, SystemPrompt: prompt, MaxOutputTokens: m.cfg.MaxOutputTokens, ThinkingLevel: worker.Config().ThinkingLevel, Temperature: worker.Config().Temperature}
+	req := Request{Provider: ProviderID(provider), Model: model, SystemPrompt: prompt}
+	if m.cfg.MaxOutputTokens > 0 {
+		req.MaxOutputTokens = m.cfg.MaxOutputTokens
+	}
 	trace := func(_ context.Context, event TraceEvent) {
 		m.mu.Lock()
 		before := job.completedToolCalls

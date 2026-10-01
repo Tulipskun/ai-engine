@@ -79,7 +79,17 @@ func (c *Client) Name() string { return "gemini" }
 // build converts via the central OpenAI Responses interface:
 // sdk.Request -> OpenAI canonical -> Gemini native.
 func build(req sdk.Request) map[string]any {
-	return BuildFromOpenAI(openai.BuildResponsesRequest(req))
+	canonical := openai.BuildResponsesRequest(req)
+	// top_k and stop are not OpenAI parameters so they never entered the
+	// canonical map, but this map is only an intermediate on the way to Gemini,
+	// which does take both.
+	if req.TopK != nil {
+		canonical["top_k"] = *req.TopK
+	}
+	if len(req.StopSequences) > 0 {
+		canonical["stop"] = req.StopSequences
+	}
+	return BuildFromOpenAI(canonical)
 }
 
 // BuildFromOpenAI translates a canonical OpenAI Responses request map
@@ -132,8 +142,17 @@ func BuildFromOpenAI(openAIReq map[string]any) map[string]any {
 	if temp, ok := openai.TemperatureOf(openAIReq); ok {
 		cfg["temperature"] = temp
 	}
+	if topP, ok := openai.TopPOf(openAIReq); ok {
+		cfg["topP"] = topP
+	}
+	if topK, ok := openai.FloatOf(openAIReq, "top_k"); ok {
+		cfg["topK"] = topK
+	}
 	if maxTokens := openai.MaxOutputTokensOf(openAIReq); maxTokens > 0 {
 		cfg["maxOutputTokens"] = maxTokens
+	}
+	if stop := openai.StopSequencesOf(openAIReq); len(stop) > 0 {
+		cfg["stopSequences"] = stop
 	}
 	if effort := openai.ReasoningEffortOf(openAIReq); effort != "" && effort != string(sdk.ThinkingNone) {
 		cfg["thinkingConfig"] = map[string]any{"thinkingLevel": effort}

@@ -21,14 +21,20 @@ import (
 // Request is the canonical OpenAI Responses request shape used as the
 // intermediate representation between sdk.Request and provider-native payloads.
 type Request struct {
-	Model           string         `json:"model"`
-	Instructions    string         `json:"instructions,omitempty"`
-	Input           []any          `json:"input,omitempty"`
-	Tools           []any          `json:"tools,omitempty"`
-	Temperature     *float64       `json:"temperature,omitempty"`
-	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
-	Reasoning       map[string]any `json:"reasoning,omitempty"`
-	Stream          bool           `json:"stream,omitempty"`
+	Model            string         `json:"model"`
+	Instructions     string         `json:"instructions,omitempty"`
+	Input            []any          `json:"input,omitempty"`
+	Tools            []any          `json:"tools,omitempty"`
+	Temperature      *float64       `json:"temperature,omitempty"`
+	TopP             *float64       `json:"top_p,omitempty"`
+	TopK             *float64       `json:"top_k,omitempty"`
+	StopSequences    []string       `json:"stop,omitempty"`
+	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
+	Seed             *int64         `json:"seed,omitempty"`
+	MaxOutputTokens  int            `json:"max_output_tokens,omitempty"`
+	Reasoning        map[string]any `json:"reasoning,omitempty"`
+	Stream           bool           `json:"stream,omitempty"`
 }
 
 // Canonical converts an sdk.Request into the canonical OpenAI struct form.
@@ -49,6 +55,12 @@ func Canonical(req sdk.Request) Request {
 		out.Tools = v
 	}
 	out.Temperature = req.Temperature
+	out.TopP = req.TopP
+	out.TopK = req.TopK
+	out.StopSequences = req.StopSequences
+	out.PresencePenalty = req.PresencePenalty
+	out.FrequencyPenalty = req.FrequencyPenalty
+	out.Seed = req.Seed
 	if v, ok := wire["max_output_tokens"].(int); ok {
 		out.MaxOutputTokens = v
 	}
@@ -99,11 +111,17 @@ func ReasoningEffortOf(openAIReq map[string]any) string {
 }
 
 // TemperatureOf returns the canonical temperature if present.
-func TemperatureOf(openAIReq map[string]any) (float64, bool) {
+func TemperatureOf(openAIReq map[string]any) (float64, bool) { return floatOf(openAIReq, "temperature") }
+
+// FloatOf reads any numeric value off the canonical map, for a key that is not
+// an OpenAI parameter but is carried there on its way to another adapter.
+func FloatOf(openAIReq map[string]any, key string) (float64, bool) { return floatOf(openAIReq, key) }
+
+func floatOf(openAIReq map[string]any, key string) (float64, bool) {
 	if openAIReq == nil {
 		return 0, false
 	}
-	switch v := openAIReq["temperature"].(type) {
+	switch v := openAIReq[key].(type) {
 	case float64:
 		return v, true
 	case float32:
@@ -112,6 +130,59 @@ func TemperatureOf(openAIReq map[string]any) (float64, bool) {
 		return float64(v), true
 	}
 	return 0, false
+}
+
+// TopPOf returns the canonical top_p if present.
+func TopPOf(openAIReq map[string]any) (float64, bool) { return floatOf(openAIReq, "top_p") }
+
+// TopKOf returns the canonical top_k if present. It is not an OpenAI parameter;
+// it rides along on the canonical shape so Gemini and Anthropic can read it.
+func TopKOf(openAIReq map[string]any) (float64, bool) { return floatOf(openAIReq, "top_k") }
+
+// PresencePenaltyOf returns the canonical presence_penalty if present.
+func PresencePenaltyOf(openAIReq map[string]any) (float64, bool) {
+	return floatOf(openAIReq, "presence_penalty")
+}
+
+// FrequencyPenaltyOf returns the canonical frequency_penalty if present.
+func FrequencyPenaltyOf(openAIReq map[string]any) (float64, bool) {
+	return floatOf(openAIReq, "frequency_penalty")
+}
+
+// SeedOf returns the canonical seed if present.
+func SeedOf(openAIReq map[string]any) (int64, bool) {
+	if openAIReq == nil {
+		return 0, false
+	}
+	switch v := openAIReq["seed"].(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	}
+	return 0, false
+}
+
+// StopSequencesOf returns the canonical stop sequences if any were set.
+func StopSequencesOf(openAIReq map[string]any) []string {
+	if openAIReq == nil {
+		return nil
+	}
+	switch v := openAIReq["stop"].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, entry := range v {
+			if s, ok := entry.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // MaxOutputTokensOf returns the canonical max_output_tokens if present.
