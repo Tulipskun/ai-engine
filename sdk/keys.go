@@ -46,6 +46,16 @@ func (p *KeyPool) Rotate() (string, error) {
 	return p.keys[p.current], nil
 }
 
-// Provider errors are retryable by default, including provider-specific 400s.
-// A 404 is the explicit non-retryable HTTP error.
-func RetryableHTTPStatus(status int) bool { return status != http.StatusNotFound }
+// RetryableHTTPStatus reports whether a status is worth trying again as-is. The
+// refusals are excluded on purpose: a 401 is about the key and is answered by
+// rotating to another one rather than by repeating the request, and a 403 is
+// about the caller or the tier, which REQ-048(9) records as a verdict the
+// provider will repeat while every attempt spends the quota it is refusing.
+func RetryableHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return false
+	default:
+		return true
+	}
+}

@@ -145,6 +145,9 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user Turn, req Re
 
 	backoff := retryBackoff{}
 	var lastErr error
+	// A session with no key pool never rotates, so this stays at zero and the
+	// behaviour is unchanged for one.
+	triedKeys := 0
 	for attempt := 0; attempt <= retries; attempt++ {
 		session.ReplaceHistory(before)
 		resp, err := a.runAttempt(ctx, session, user, req, trace, &backoff, entry, clock)
@@ -160,6 +163,18 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user Turn, req Re
 			break
 		}
 		session.ReplaceHistory(before)
+		// A rejected key is the one failure worth a different attempt rather than
+		// a repeat: the pool may hold a working key, and asking again with the same
+		// key gets the same answer. Move to the next one and try it immediately,
+		// with no backoff, because the key is not coming back. Every key is tried
+		// once and then the turn fails for real (CHANGE-077).
+		if isKeyRejection(err) {
+			triedKeys++
+			if rotateToNextKey(session, triedKeys) {
+				traceEvent(ctx, trace, newTraceEvent(TraceRetryWait, withErr(err)))
+				continue
+			}
+		}
 		if !retryableAgentError(ctx, err) || attempt == retries {
 			break
 		}
@@ -621,6 +636,32 @@ func retryableAgentError(ctx context.Context, err error) bool {
 		return false
 	}
 	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+// isKeyRejection reports the one refusal that is about the key rather than about
+// the caller. A 403 is deliberately not here: REQ-048(9) records that a free tier
+// answers the same way whatever key is presented, and every retry spends quota
+// the tier is already refusing.
+func isKeyRejection(err error) bool {
+	var statusErr HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.HTTPStatusCode() == 401
+}
+
+// rotateToNextKey moves the session onto the next key in its pool, and reports
+// whether there was one left to try. tried counts the keys already presented, so
+// each key is used once and the turn then fails for real.
+func rotateToNextKey(session *Session, tried int) bool {
+	pool := session.keyPoolSize()
+	if pool <= 1 || tried >= pool {
+		return false
+	}
+	if _, err := session.RotateAPIKey(); err != nil {
+		return false
+	}
+	return true
 }
 
 func isRateLimitError(err error) bool {

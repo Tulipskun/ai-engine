@@ -242,6 +242,21 @@ func (s *Session) Config() SessionConfig {
 	defer s.mu.RUnlock()
 	return s.config.clone()
 }
+// keyPoolSize reports how many keys this session could try. A session with no
+// pool, or a pool of one, has nothing to rotate to.
+func (s *Session) keyPoolSize() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	keys := s.keys
+	s.mu.RUnlock()
+	if keys == nil {
+		return 0
+	}
+	return keys.Len()
+}
+
 func (s *Session) APIKey() (string, error) {
 	s.mu.RLock()
 	keys, index := s.keys, s.config.KeyIndex
