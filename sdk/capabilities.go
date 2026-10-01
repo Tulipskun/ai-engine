@@ -72,11 +72,11 @@ func thinksByFamily(modelID string) bool {
 		return false
 	}
 	for _, prefix := range []string{
-		"o1", "o3", "o4",           // OpenAI reasoning families
-		"gpt-5", "gpt-oss",         // and the current GPT line
-		"claude-3-7", "claude-4",   // Anthropic extended thinking arrived at 3.7
+		"o1", "o3", "o4", // OpenAI reasoning families
+		"gpt-5", "gpt-oss", // and the current GPT line
+		"claude-3-7", "claude-4", // Anthropic extended thinking arrived at 3.7
 		"claude-opus-4", "claude-sonnet-4", "claude-haiku-4",
-		"gemini-2.5",               // Gemini thinking budget
+		"gemini-2.5", // Gemini thinking budget
 		"deepseek-r1", "deepseek-reasoner", "qwq",
 	} {
 		if id == prefix || strings.HasPrefix(id, prefix+"-") {

@@ -17,3 +17,14 @@ jobs:
       - run: go build ./...
       - run: go test ./... -timeout 2m
       - run: go vet ./...
+      # gofmt is canonical Go and go vet does not check it, so without this a
+      # file that drifts keeps drifting and nobody notices.
+      - name: Formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d $unformatted
+            exit 1
+          fi

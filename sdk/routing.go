@@ -242,6 +242,7 @@ func (s *Session) Config() SessionConfig {
 	defer s.mu.RUnlock()
 	return s.config.clone()
 }
+
 // keyPoolSize reports how many keys this session could try. A session with no
 // pool, or a pool of one, has nothing to rotate to.
 func (s *Session) keyPoolSize() int {

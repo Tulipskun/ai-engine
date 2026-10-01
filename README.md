@@ -17,12 +17,16 @@ hand over on restart.
 
 ## Tools
 
-The worker's whole tool surface is two tools (`CHANGE-087`):
+The worker's tool surface is three tools (`CHANGE-087`, `CHANGE-095`):
 
 - `read` — one UTF-8 text file inside the workspace, 4 MiB cap, `safePath` /
   `withinRoot` enforced
-- `bash` — the only execution tool: create, edit, search, list, build and test
-  all go through the shell
+- `bash` — the only execution tool inside the workspace: create, edit, search,
+  list, build and test all go through the shell
+- `screen_control` — asks a separately running local JEV runtime to drive the
+  screen. It needs `JEV_LOCAL_URL` pointing at that runtime; without it the tool
+  reports that there is nothing to talk to rather than pretending to work. The
+  action itself is never executed by this daemon.
 
 The Main Agent (planner) gets `read` and the sub-agent orchestration tools; it
 cannot execute. There is no browser, no attachment store, no OS input, no

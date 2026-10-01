@@ -17,7 +17,7 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 ├── cmd/demo/          throwaway provider-smoke prototype (not shipped)
 ├── sdk/               provider-neutral Agent runtime, sessions, orchestration
 │   └── providers/jev/  auxiliary System One guard for bash tool calls
-├── tools/             worker execution tools: read + bash only
+├── tools/             worker tools: read, bash, screen_control (external JEV)
 ├── runtime/           config load, session manager, provider wiring
 ├── transport/         mobile transport only (display only, no core logic)
 │   └── mobile/        AIxodia WebSocket gateway over a Cloudflare quick tunnel
@@ -39,7 +39,7 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 | Context budget, newest-group truncation | `sdk/context_window.go` |
 | Session persistence (one db per session) | `sdk/session_db.go`, `sdk/session_settings.go` |
 | Provider routing, catalogue, retry | `sdk/router_client.go`, `sdk/routing.go`, `sdk/providers/` |
-| Worker tool surface (read + bash) | `tools/registry.go` |
+| Worker tool surface (read, bash, screen_control) | `tools/registry.go` |
 | Read tool and workspace path discipline | `tools/files.go` |
 | Shell tool | `tools/command.go` |
 | Runtime config + session manager | `runtime/session_manager.go`, `runtime/*.go` |
@@ -66,10 +66,12 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 - `sdk/context_window.go` — token budget (default 58000); keeps newest
   complete user→response→tools groups unsplit, drops oldest first.
 - `sdk/session_db.go` — one SQLite db per session under `data/sessions/`;
-  persists settings, turns, and plan state across restarts.
+  persists settings, turns, and plan state across restarts, adding new
+  generation columns to a database written before they existed.
 - `tools/registry.go` — worker `Registry`: registers the whole tool surface
-  (`read`, `bash`), resolves per-session workspace root, dispatches `Execute`
-  calls. CHANGE-087 retired every other tool.
+  (`read`, `bash`, `screen_control`), resolves per-session workspace root,
+  dispatches `Execute` calls. CHANGE-087 retired every other tool;
+  `screen_control` talks to an external JEV runtime and never acts itself.
 - `tools/files.go` — `read` plus the `safePath`/`withinRoot` discipline every
   tool relies on (4 MiB per file, traversal and symlink escapes rejected).
 
@@ -84,9 +86,11 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 - `requirements/decisions.md` — accepted architecture decisions.
 - `requirements/changes.md` — append-only CHANGE-xxx history.
 - `AGENTS.md` — spec-first workflow and module-discipline rule.
-- `workflow.md` — turn pipeline and retry/error side paths.
-- `docs/cli-mode.md`, `docs/install-layout.md`, `docs/layout-new.md`,
-  `docs/session-runtime-settings.md` — transport, install, settings notes.
+
+Generation settings (REQ-049) live in `sdk/types.go` (the knobs and their single
+merge point), `sdk/validate.go` (the bounds), `sdk/capabilities.go` (what each
+model accepts), and are read from `config/system.json` and set by the phone
+through `transport/mobile/generation.go`.
 
 ## Start-here routes
 

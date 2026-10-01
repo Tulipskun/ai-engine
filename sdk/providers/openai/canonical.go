@@ -111,7 +111,9 @@ func ReasoningEffortOf(openAIReq map[string]any) string {
 }
 
 // TemperatureOf returns the canonical temperature if present.
-func TemperatureOf(openAIReq map[string]any) (float64, bool) { return floatOf(openAIReq, "temperature") }
+func TemperatureOf(openAIReq map[string]any) (float64, bool) {
+	return floatOf(openAIReq, "temperature")
+}
 
 // FloatOf reads any numeric value off the canonical map, for a key that is not
 // an OpenAI parameter but is carried there on its way to another adapter.

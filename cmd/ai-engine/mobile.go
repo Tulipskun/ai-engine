@@ -149,10 +149,10 @@ func (m modelStore) Providers(context.Context) ([]mobiletransport.ProviderView, 
 				SupportsTools: model.SupportsTools, SupportsTemperature: model.SupportsTemperature,
 				SupportsStreaming: model.SupportsStreaming, SupportsThinking: model.SupportsThinking,
 				SupportsTopP: model.SupportsTopP, SupportsTopK: model.SupportsTopK,
-				SupportsStopSequences: model.SupportsStopSequences,
-				SupportsPresencePenalty: model.SupportsPresencePenalty,
+				SupportsStopSequences:    model.SupportsStopSequences,
+				SupportsPresencePenalty:  model.SupportsPresencePenalty,
 				SupportsFrequencyPenalty: model.SupportsFrequencyPenalty,
-				SupportsSeed: model.SupportsSeed,
+				SupportsSeed:             model.SupportsSeed,
 			})
 		}
 		if len(view.Models) > 0 {

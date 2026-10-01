@@ -231,7 +231,7 @@ func run(ctx context.Context) error {
 			MaxOutputTokens: maxOutputTokens,
 			Stream:          true,
 		}, nil
-		}, Displays: displays, DisplayTimeout: 10 * time.Second, OnTurnError: func(input sdk.Input, err error) {
+	}, Displays: displays, DisplayTimeout: 10 * time.Second, OnTurnError: func(input sdk.Input, err error) {
 		if errors.Is(err, context.Canceled) {
 			log.Printf("turn stopped by the phone source=%s session=%s", input.Source, input.SessionID)
 			return

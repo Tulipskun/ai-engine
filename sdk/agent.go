@@ -495,7 +495,6 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 	}
 }
 
-
 func settleInterruptedTurn(session *Session, before []Turn) {
 	if session == nil {
 		return
