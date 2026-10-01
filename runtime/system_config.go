@@ -12,13 +12,33 @@ import (
 
 type SubAgentConfig = sdk.SubAgentConfig
 
+// SystemConfig is the boot configuration. The generation knobs are top-level
+// fields for the main agent and live under sub_agent for the worker, because
+// each agent runs on its own settings; anything left unset stays unset so the
+// provider keeps its own default (CHANGE-077).
 type SystemConfig struct {
-	SystemPrompt    string         `json:"system_prompt"`
-	Provider        string         `json:"provider"`
-	Model           string         `json:"model"`
-	MaxOutputTokens int            `json:"max_output_tokens"`
-	Workspace       string         `json:"workspace"`
-	SubAgent        SubAgentConfig `json:"sub_agent"`
+	SystemPrompt string `json:"system_prompt"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	// Generation holds the main agent's knobs. max_output_tokens stays a sibling
+	// field because it predates this and is read by the boot path directly.
+	Generation      sdk.GenerationSettings `json:"generation"`
+	MaxOutputTokens int                    `json:"max_output_tokens"`
+	Workspace       string                 `json:"workspace"`
+	SubAgent        SubAgentConfig         `json:"sub_agent"`
+}
+
+// Settings returns the generation knobs as they are stored, so the boot path can
+// seed a session from this without knowing how the file spelled them.
+func (c SystemConfig) Settings() sdk.GenerationSettings { return c.Generation }
+
+// MaxOutputTokensFor returns the cap that applies to the main agent, preferring
+// the generation block and falling back to the older top-level field.
+func (c SystemConfig) MaxOutputTokensFor() int {
+	if c.MaxOutputTokens > 0 {
+		return c.MaxOutputTokens
+	}
+	return c.Generation.MaxOutputTokens
 }
 
 const DefaultSystemConfigPath = "config/system.json"
@@ -42,6 +62,12 @@ func LoadSystemConfig(path string) (SystemConfig, error) {
 	if cfg.MaxOutputTokens < 0 {
 		return SystemConfig{}, fmt.Errorf("system: decode config %q: max_output_tokens must not be negative", path)
 	}
+	if err := validateGeneration(path, cfg.Generation); err != nil {
+		return SystemConfig{}, err
+	}
+	if err := validateSubAgentGeneration(path, cfg.SubAgent); err != nil {
+		return SystemConfig{}, err
+	}
 	cfg.SystemPrompt = strings.TrimSpace(cfg.SystemPrompt)
 	cfg.Provider = strings.TrimSpace(cfg.Provider)
 	cfg.Model = strings.TrimSpace(cfg.Model)
@@ -50,6 +76,54 @@ func LoadSystemConfig(path string) (SystemConfig, error) {
 		cfg.SubAgent.Enabled = true
 	}
 	return cfg, nil
+}
+
+// validateGeneration holds a hand-edited config to the same bounds a value
+// arriving over the wire is held to, so the two cannot disagree about what is
+// allowed (CHANGE-077).
+func validateGeneration(path string, g sdk.GenerationSettings) error {
+	if g.Temperature != nil {
+		if err := sdk.ValidateTemperature(*g.Temperature); err != nil {
+			return fmt.Errorf("system: decode config %q: %w", path, err)
+		}
+	}
+	if g.TopP != nil {
+		if err := sdk.ValidateTopP(*g.TopP); err != nil {
+			return fmt.Errorf("system: decode config %q: %w", path, err)
+		}
+	}
+	if g.TopK != nil {
+		if err := sdk.ValidateTopK(*g.TopK); err != nil {
+			return fmt.Errorf("system: decode config %q: %w", path, err)
+		}
+	}
+	if g.PresencePenalty != nil {
+		if err := sdk.ValidatePenalty("presence_penalty", *g.PresencePenalty); err != nil {
+			return fmt.Errorf("system: decode config %q: %w", path, err)
+		}
+	}
+	if g.FrequencyPenalty != nil {
+		if err := sdk.ValidatePenalty("frequency_penalty", *g.FrequencyPenalty); err != nil {
+			return fmt.Errorf("system: decode config %q: %w", path, err)
+		}
+	}
+	if g.ThinkingLevel != "" {
+		if err := sdk.ValidateThinkingLevel(g.ThinkingLevel); err != nil {
+			return fmt.Errorf("system: decode config %q: %w", path, err)
+		}
+	}
+	if g.MaxOutputTokens < 0 {
+		return fmt.Errorf("system: decode config %q: max_output_tokens must not be negative", path)
+	}
+	return nil
+}
+
+func validateSubAgentGeneration(path string, sub sdk.SubAgentConfig) error {
+	return validateGeneration(path, sdk.GenerationSettings{
+		ThinkingLevel:   sub.ThinkingLevel,
+		Temperature:     sub.Temperature,
+		MaxOutputTokens: sub.MaxOutputTokens,
+	})
 }
 
 // dirOf returns the directory part of a config path. CHANGE-087 moved it here

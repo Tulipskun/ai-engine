@@ -188,6 +188,14 @@ type Model struct {
 	SupportsThinking    bool   `json:"supports_thinking"`
 	SupportsTemperature bool   `json:"supports_temperature"`
 	SupportsStreaming   bool   `json:"supports_streaming"`
+	// The remaining knobs, reported per model so the phone can hide what this
+	// particular model would refuse (CHANGE-077).
+	SupportsTopP             bool `json:"supports_top_p"`
+	SupportsTopK             bool `json:"supports_top_k"`
+	SupportsStopSequences    bool `json:"supports_stop_sequences"`
+	SupportsPresencePenalty  bool `json:"supports_presence_penalty"`
+	SupportsFrequencyPenalty bool `json:"supports_frequency_penalty"`
+	SupportsSeed             bool `json:"supports_seed"`
 }
 type ProviderConfig struct {
 	ID         ProviderID        `json:"id"`
@@ -348,6 +356,8 @@ type GenerationSettings struct {
 	PresencePenalty  *float64      `json:"presence_penalty,omitempty"`
 	FrequencyPenalty *float64      `json:"frequency_penalty,omitempty"`
 	Seed             *int64        `json:"seed,omitempty"`
+	// MaxOutputTokens is 0 for "no cap", which leaves the limit to the provider.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 // AgentMode selects how a session answers: AgentModeMain plans through the

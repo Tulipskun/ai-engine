@@ -98,7 +98,7 @@ func (r *Router) RefreshModels(ctx context.Context, provider ProviderID, adapter
 			continue
 		}
 		seen[model.ID] = struct{}{}
-		clean = append(clean, model)
+		clean = append(clean, ModelCapabilities(config.Adapter, model))
 	}
 	clean = filterFreeModels(clean, config.FreeOnly)
 	r.mu.Lock()

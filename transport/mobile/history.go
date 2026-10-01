@@ -53,6 +53,18 @@ type ModelView struct {
 	SupportsTools       bool   `json:"supports_tools"`
 	SupportsTemperature bool   `json:"supports_temperature"`
 	SupportsStreaming   bool   `json:"supports_streaming"`
+	// SupportsThinking was discovered but never carried here, so the phone had
+	// no way to know a reasoning control was worth showing (CHANGE-077).
+	SupportsThinking bool `json:"supports_thinking"`
+	// The knobs this model accepts at all, so the phone can grey out the rest
+	// instead of offering a setting that would be dropped on the way to the
+	// provider.
+	SupportsTopP             bool `json:"supports_top_p"`
+	SupportsTopK             bool `json:"supports_top_k"`
+	SupportsStopSequences    bool `json:"supports_stop_sequences"`
+	SupportsPresencePenalty  bool `json:"supports_presence_penalty"`
+	SupportsFrequencyPenalty bool `json:"supports_frequency_penalty"`
+	SupportsSeed             bool `json:"supports_seed"`
 }
 
 type ProviderView struct {

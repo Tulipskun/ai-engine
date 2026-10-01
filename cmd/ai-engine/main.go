@@ -104,7 +104,30 @@ func run(ctx context.Context) error {
 		providerID = string(rt.ProviderConfigs[0].ID)
 	}
 	modelID := strings.TrimSpace(os.Getenv("AI_MODEL"))
-	sessions := runtime.NewSessionManagerWithProviders(sessionDB, sdk.SessionConfig{Provider: sdk.ProviderID(providerID), Model: modelID}, rt.ProviderConfigs)
+	systemConfig, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath))
+	if err != nil {
+		return err
+	}
+	// The boot session carries the main agent's generation settings. Without this
+	// the settings lived in the config file but nothing ever copied them onto a
+	// session, so a hand-edited config changed nothing (CHANGE-077).
+	baseSession := sdk.SessionConfig{
+		Provider:         sdk.ProviderID(providerID),
+		Model:            modelID,
+		ThinkingLevel:    systemConfig.Settings().ThinkingLevel,
+		Temperature:      systemConfig.Settings().Temperature,
+		TopP:             systemConfig.Settings().TopP,
+		TopK:             systemConfig.Settings().TopK,
+		StopSequences:    systemConfig.Settings().StopSequences,
+		PresencePenalty:  systemConfig.Settings().PresencePenalty,
+		FrequencyPenalty: systemConfig.Settings().FrequencyPenalty,
+		Seed:             systemConfig.Settings().Seed,
+		MaxOutputTokens:  systemConfig.MaxOutputTokensFor(),
+	}
+	if maxOutputTokens > 0 {
+		baseSession.MaxOutputTokens = maxOutputTokens
+	}
+	sessions := runtime.NewSessionManagerWithProviders(sessionDB, baseSession, rt.ProviderConfigs)
 	defer sessions.Close()
 	providerManager := runtime.NewProviderManager(providerConfigPath, rt, providerFile)
 	inputConfigPath := filepath.Join(state, transport.DefaultConfigPath)
@@ -119,7 +142,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	agent, err := newAgentWithWorkspaces(rt.Client, workspace, state, func(ctx context.Context) string {
+	agent, err := newAgentWithWorkspaces(rt.Client, workspace, state, systemConfig, func(ctx context.Context) string {
 		return sessions.WorkspaceFor(sdk.SessionIDFromContext(ctx))
 	})
 	if err != nil {
@@ -256,10 +279,16 @@ func turnErrorMessage(err error) string {
 }
 
 func newAgent(client *sdk.RouterClient, workspace, state string) (*sdk.Agent, error) {
-	return newAgentWithWorkspaces(client, workspace, state, nil)
+	// Load here rather than taking an empty config: the sub-agent defaults that
+	// LoadSystemConfig applies are part of what this constructor means.
+	cfg, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath))
+	if err != nil {
+		return nil, err
+	}
+	return newAgentWithWorkspaces(client, workspace, state, cfg, nil)
 }
 
-func newAgentWithWorkspaces(client *sdk.RouterClient, workspace, state string, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
+func newAgentWithWorkspaces(client *sdk.RouterClient, workspace, state string, cfg runtime.SystemConfig, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
 	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
@@ -268,10 +297,6 @@ func newAgentWithWorkspaces(client *sdk.RouterClient, workspace, state string, w
 		registry.SetWorkspaceResolver(workspaceFor)
 	}
 	agent := &sdk.Agent{Client: client, Tools: registry}
-	cfg, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath))
-	if err != nil {
-		return nil, err
-	}
 	agent.SubAgentConfig = sdk.SubAgentConfig{
 		Enabled:              cfg.SubAgent.Enabled,
 		Provider:             cfg.SubAgent.Provider,

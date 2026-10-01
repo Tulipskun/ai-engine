@@ -3,7 +3,6 @@ package sdk
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -82,17 +81,17 @@ func (s *Session) SetModel(model string) error {
 	return s.updateConfig(func(config *SessionConfig) error { config.Model = model; return nil })
 }
 func (s *Session) SetTemperature(temperature float64) error {
-	if math.IsNaN(temperature) || math.IsInf(temperature, 0) {
-		return errors.New("sdk: temperature must be finite")
+	if err := ValidateTemperature(temperature); err != nil {
+		return err
 	}
-	return s.updateConfig(func(config *SessionConfig) error { v := temperature; config.Temperature = &v; return nil })
+	return s.updateConfig(func(config *SessionConfig) error { config.Temperature = cloneFloat(&temperature); return nil })
 }
 func (s *Session) ClearTemperature() error {
 	return s.updateConfig(func(config *SessionConfig) error { config.Temperature = nil; return nil })
 }
 func (s *Session) SetThinkingLevel(level ThinkingLevel) error {
-	if !validThinkingLevel(level) {
-		return fmt.Errorf("sdk: invalid thinking level %q", level)
+	if err := ValidateThinkingLevel(level); err != nil {
+		return err
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.ThinkingLevel = level; return nil })
 }
@@ -121,8 +120,8 @@ func (s *Session) SetKeyIndex(index int) error {
 // SetMaxOutputTokens caps how long an answer may run. Zero means no cap, which
 // leaves the limit to the provider's own default rather than inventing one.
 func (s *Session) SetMaxOutputTokens(tokens int) error {
-	if tokens < 0 {
-		return errors.New("sdk: max output tokens must not be negative")
+	if err := ValidateMaxOutputTokens(tokens); err != nil {
+		return err
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.MaxOutputTokens = tokens; return nil })
 }
@@ -132,7 +131,7 @@ func (s *Session) SetMaxOutputTokens(tokens int) error {
 // (CHANGE-077).
 
 func (s *Session) SetTopP(v float64) error {
-	if err := checkRange("top_p", v, 0, 1); err != nil {
+	if err := ValidateTopP(v); err != nil {
 		return err
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.TopP = cloneFloat(&v); return nil })
@@ -142,7 +141,7 @@ func (s *Session) ClearTopP() error {
 }
 
 func (s *Session) SetTopK(v float64) error {
-	if err := checkRange("top_k", v, 0, 1); err != nil {
+	if err := ValidateTopK(v); err != nil {
 		return err
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.TopK = cloneFloat(&v); return nil })
@@ -168,7 +167,7 @@ func (s *Session) ClearStopSequences() error {
 }
 
 func (s *Session) SetPresencePenalty(v float64) error {
-	if err := checkRange("presence_penalty", v, -2, 2); err != nil {
+	if err := ValidatePenalty("presence_penalty", v); err != nil {
 		return err
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.PresencePenalty = cloneFloat(&v); return nil })
@@ -178,7 +177,7 @@ func (s *Session) ClearPresencePenalty() error {
 }
 
 func (s *Session) SetFrequencyPenalty(v float64) error {
-	if err := checkRange("frequency_penalty", v, -2, 2); err != nil {
+	if err := ValidatePenalty("frequency_penalty", v); err != nil {
 		return err
 	}
 	return s.updateConfig(func(config *SessionConfig) error { config.FrequencyPenalty = cloneFloat(&v); return nil })
@@ -192,18 +191,6 @@ func (s *Session) SetSeed(seed int64) error {
 }
 func (s *Session) ClearSeed() error {
 	return s.updateConfig(func(config *SessionConfig) error { config.Seed = nil; return nil })
-}
-
-// checkRange rejects a value no provider would accept, and rejects NaN and Inf
-// too: they survive a range comparison and would reach the HTTP body as garbage.
-func checkRange(name string, v, lo, hi float64) error {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return fmt.Errorf("sdk: %s must be a number", name)
-	}
-	if v < lo || v > hi {
-		return fmt.Errorf("sdk: %s must be between %g and %g, got %g", name, lo, hi, v)
-	}
-	return nil
 }
 
 func validThinkingLevel(level ThinkingLevel) bool {

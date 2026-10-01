@@ -147,7 +147,12 @@ func (m modelStore) Providers(context.Context) ([]mobiletransport.ProviderView, 
 			view.Models = append(view.Models, mobiletransport.ModelView{
 				ID: model.ID, Name: model.Name,
 				SupportsTools: model.SupportsTools, SupportsTemperature: model.SupportsTemperature,
-				SupportsStreaming: model.SupportsStreaming,
+				SupportsStreaming: model.SupportsStreaming, SupportsThinking: model.SupportsThinking,
+				SupportsTopP: model.SupportsTopP, SupportsTopK: model.SupportsTopK,
+				SupportsStopSequences: model.SupportsStopSequences,
+				SupportsPresencePenalty: model.SupportsPresencePenalty,
+				SupportsFrequencyPenalty: model.SupportsFrequencyPenalty,
+				SupportsSeed: model.SupportsSeed,
 			})
 		}
 		if len(view.Models) > 0 {
