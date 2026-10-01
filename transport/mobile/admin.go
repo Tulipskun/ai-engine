@@ -27,10 +27,27 @@ type ProviderStatus struct {
 	LastError    string `json:"last_error,omitempty"`
 }
 
+// GenerationSettings is the set of knobs the phone may set. Every numeric field
+// is a pointer or a slice so "not set" is told apart from zero: an omitted knob
+// leaves the provider on its own default, whereas a zero would be an instruction
+// the model obeyed (CHANGE-077).
+type GenerationSettings struct {
+	ThinkingLevel    string   `json:"thinking_level,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	TopK             *float64 `json:"top_k,omitempty"`
+	StopSequences    []string `json:"stop_sequences,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
+}
+
 // AgentSettings is what the main agent and the sub agent each run on.
 type AgentSettings struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Provider   string             `json:"provider"`
+	Model      string             `json:"model"`
+	Generation GenerationSettings `json:"generation"`
 }
 
 type SettingsView struct {
@@ -209,8 +226,20 @@ func adminProviderItem(w http.ResponseWriter, r *http.Request, store AdminStore,
 
 func adminSaveSettings(w http.ResponseWriter, r *http.Request, store AdminStore) {
 	var settings SettingsView
-	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&settings); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
+		return
+	}
+	// Reject a value no provider would accept before anything is written, so a
+	// bad setting leaves the stored configuration exactly as it was.
+	if err := ValidateGenerationSettings(settings.Main.Generation); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ValidateGenerationSettings(settings.Sub.Generation); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	saved, err := store.SaveSettings(r.Context(), settings)

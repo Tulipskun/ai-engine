@@ -87,6 +87,11 @@ type ModelChoice struct {
 	SubModel    string `json:"sub_model,omitempty"`
 	SubEnabled  *bool  `json:"sub_enabled,omitempty"`
 	ClearSub    bool   `json:"clear_sub,omitempty"`
+	// Generation is this chat's own set of knobs. A pointer field that is nil
+	// means "leave whatever is stored alone"; a pointer to zero means "store
+	// zero". ClearGeneration empties the whole set back to the provider defaults.
+	Generation      *GenerationSettings `json:"generation,omitempty"`
+	ClearGeneration bool                `json:"clear_generation,omitempty"`
 }
 
 // SessionAgentConfig is the resolved per-session agent setup: the main route
@@ -100,6 +105,11 @@ type SessionAgentConfig struct {
 	SubModel    string `json:"sub_model,omitempty"`
 	SubEnabled  bool   `json:"sub_enabled"`
 	SubPinned   bool   `json:"sub_pinned"`
+	// Generation is what this chat actually runs on, and Source says whether it
+	// came from the chat itself or from the agent defaults, so the phone can show
+	// the difference instead of guessing which it is editing.
+	Generation GenerationSettings `json:"generation"`
+	Source     string             `json:"generation_source,omitempty"`
 }
 
 // ModelStore is the live half of provider configuration: what the runtime can
@@ -286,20 +296,31 @@ func serveSessionItem(w http.ResponseWriter, r *http.Request, store HistoryStore
 			SubModel    string `json:"sub_model"`
 			SubEnabled  *bool  `json:"sub_enabled"`
 			ClearSub    bool   `json:"clear_sub"`
+
+			Generation      *GenerationSettings `json:"generation"`
+			ClearGeneration bool                `json:"clear_generation"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 			return
 		}
+		if body.Generation != nil {
+			if err := ValidateGenerationSettings(*body.Generation); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 		choice := ModelChoice{
 			Provider: strings.TrimSpace(body.Provider), Model: strings.TrimSpace(body.Model), Clear: body.ClearModel,
 			SubProvider: strings.TrimSpace(body.SubProvider), SubModel: strings.TrimSpace(body.SubModel),
 			SubEnabled: body.SubEnabled, ClearSub: body.ClearSub,
+			Generation: body.Generation, ClearGeneration: body.ClearGeneration,
 		}
 		// A sub-agent-only save is a real change: it carries no main route at
 		// all, and letting it fall through would answer "title required".
 		if models != nil && (body.ClearModel || choice.Provider != "" || choice.Model != "" ||
-			choice.SubProvider != "" || choice.SubModel != "" || choice.SubEnabled != nil || choice.ClearSub) {
+			choice.SubProvider != "" || choice.SubModel != "" || choice.SubEnabled != nil || choice.ClearSub ||
+			choice.Generation != nil || choice.ClearGeneration) {
 			row, err := models.SetSessionModel(r.Context(), id, choice)
 			if err != nil {
 				writeModelError(w, err)

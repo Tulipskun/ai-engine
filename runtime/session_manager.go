@@ -242,6 +242,108 @@ func (m *SessionManager) ListSessions(limit int) ([]sdk.SessionInfo, error) {
 // next turn reopens that session from the current defaults. Clearing a session
 // route calls this after removing the D1 pin: the old provider/model must not
 // survive in a cached object.
+// ApplyGeneration writes the generation knobs onto one chat and returns the
+// session database it wrote to, so the caller can push that file to D1. The knobs
+// are set through the session setters so the same bounds apply and the change is
+// persisted by the same path as everything else about the session (CHANGE-077).
+func (m *SessionManager) ApplyGeneration(ctx context.Context, sessionID string, settings sdk.GenerationSettings, clear bool) (string, error) {
+	if m == nil {
+		return "", errors.New("runtime: session manager is nil")
+	}
+	session, err := m.Resolve(ctx, sdk.Input{SessionID: sessionID})
+	if err != nil {
+		return "", err
+	}
+	if clear {
+		for _, unset := range []func() error{
+			func() error { return session.ClearTemperature() },
+			func() error { return session.ClearThinkingLevel() },
+			func() error { return session.ClearTopP() },
+			func() error { return session.ClearTopK() },
+			func() error { return session.ClearStopSequences() },
+			func() error { return session.ClearPresencePenalty() },
+			func() error { return session.ClearFrequencyPenalty() },
+			func() error { return session.ClearSeed() },
+		} {
+			if err := unset(); err != nil {
+				return "", err
+			}
+		}
+		if err := session.SetMaxOutputTokens(0); err != nil {
+			return "", err
+		}
+		return sdk.SessionDBPath(m.dir, sessionID), nil
+	}
+	if settings.Temperature != nil {
+		if err := session.SetTemperature(*settings.Temperature); err != nil {
+			return "", err
+		}
+	}
+	if settings.ThinkingLevel != "" {
+		if err := session.SetThinkingLevel(sdk.ThinkingLevel(settings.ThinkingLevel)); err != nil {
+			return "", err
+		}
+	}
+	if settings.TopP != nil {
+		if err := session.SetTopP(*settings.TopP); err != nil {
+			return "", err
+		}
+	}
+	if settings.TopK != nil {
+		if err := session.SetTopK(*settings.TopK); err != nil {
+			return "", err
+		}
+	}
+	if len(settings.StopSequences) > 0 {
+		if err := session.SetStopSequences(settings.StopSequences); err != nil {
+			return "", err
+		}
+	}
+	if settings.PresencePenalty != nil {
+		if err := session.SetPresencePenalty(*settings.PresencePenalty); err != nil {
+			return "", err
+		}
+	}
+	if settings.FrequencyPenalty != nil {
+		if err := session.SetFrequencyPenalty(*settings.FrequencyPenalty); err != nil {
+			return "", err
+		}
+	}
+	if settings.Seed != nil {
+		if err := session.SetSeed(*settings.Seed); err != nil {
+			return "", err
+		}
+	}
+	if err := session.SetMaxOutputTokens(settings.MaxOutputTokens); err != nil {
+		return "", err
+	}
+	return sdk.SessionDBPath(m.dir, sessionID), nil
+}
+
+// SessionGeneration reads back what one chat runs on, so the phone can be told
+// what it is editing rather than guessing from what it last sent.
+func (m *SessionManager) SessionGeneration(ctx context.Context, sessionID string) (sdk.GenerationSettings, bool, error) {
+	if m == nil {
+		return sdk.GenerationSettings{}, false, errors.New("runtime: session manager is nil")
+	}
+	session, err := m.Resolve(ctx, sdk.Input{SessionID: sessionID})
+	if err != nil {
+		return sdk.GenerationSettings{}, false, err
+	}
+	cfg := session.Config()
+	return sdk.GenerationSettings{
+		ThinkingLevel:    cfg.ThinkingLevel,
+		Temperature:      cfg.Temperature,
+		TopP:             cfg.TopP,
+		TopK:             cfg.TopK,
+		StopSequences:    cfg.StopSequences,
+		PresencePenalty:  cfg.PresencePenalty,
+		FrequencyPenalty: cfg.FrequencyPenalty,
+		Seed:             cfg.Seed,
+		MaxOutputTokens:  cfg.MaxOutputTokens,
+	}, true, nil
+}
+
 func (m *SessionManager) Forget(id string) {
 	if m == nil || id == "" {
 		return

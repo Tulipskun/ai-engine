@@ -208,9 +208,24 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 	case subProvider != "" || subModel != "":
 		return mobiletransport.SessionRow{}, fmt.Errorf("sub agent %q has no model %q", subProvider, subModel)
 	}
-	if !mainChanged && !subRouteChanged && subEnabled == nil {
+	generationChanged := choice.Generation != nil || choice.ClearGeneration
+	if !mainChanged && !subRouteChanged && subEnabled == nil && !generationChanged {
 		// Nothing in this request targets the session: neither the main route
-		// nor the sub-agent. Report the row instead of rewriting the pins.
+		// nor the sub-agent, and no knob. Report the row instead of rewriting
+		// anything.
+		return m.sessionRow(ctx, sessionID)
+	}
+	if generationChanged {
+		g := mobiletransport.GenerationSettings{}
+		if choice.Generation != nil {
+			g = *choice.Generation
+		}
+		if err := m.applySessionGeneration(ctx, sessionID, g, choice.ClearGeneration); err != nil {
+			return mobiletransport.SessionRow{}, fmt.Errorf("generation settings: %w", err)
+		}
+	}
+	if !mainChanged && !subRouteChanged && subEnabled == nil {
+		// Only the knobs were sent, so the route pins were left alone above.
 		return m.sessionRow(ctx, sessionID)
 	}
 	if mainChanged {
@@ -283,7 +298,83 @@ func (m modelStore) ResolveAgentConfig(ctx context.Context, sessionID string) (m
 		cfg.SubModel = global.Sub.Model
 		cfg.SubEnabled = global.SubEnabled
 	}
+	// The chat's own knobs come from the live session, falling back to the global
+	// agent defaults for a chat that has never been given any. Saying which one
+	// answered lets the phone show the difference instead of guessing (CHANGE-077).
+	if m.sessions != nil {
+		if stored, ok, err := m.sessions.SessionGeneration(ctx, sessionID); err != nil {
+			log.Printf("mobile: read generation for %s: %v", sessionID, err)
+		} else if ok {
+			if storedGeneration(stored).IsEmpty() {
+				cfg.Generation = global.Main.Generation
+				cfg.Source = "default"
+			} else {
+				cfg.Generation = fromSDK(stored)
+				cfg.Source = "session"
+			}
+		}
+	}
+	if cfg.Generation.IsEmpty() {
+		cfg.Source = "default"
+	}
 	return cfg, nil
+}
+
+// storedGeneration is the emptiness test on the SDK shape.
+func storedGeneration(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
+	return fromSDK(g)
+}
+
+// toSDK converts the wire knobs into the SDK's own type, which is what the
+// session setters validate. The conversion is the boundary where "the phone sent
+// nothing" stays nil instead of becoming a zero.
+func toSDK(g mobiletransport.GenerationSettings) sdk.GenerationSettings {
+	return sdk.GenerationSettings{
+		ThinkingLevel:    sdk.ThinkingLevel(strings.TrimSpace(g.ThinkingLevel)),
+		Temperature:      g.Temperature,
+		TopP:             g.TopP,
+		TopK:             g.TopK,
+		StopSequences:    g.StopSequences,
+		PresencePenalty:  g.PresencePenalty,
+		FrequencyPenalty: g.FrequencyPenalty,
+		Seed:             g.Seed,
+		MaxOutputTokens:  g.MaxOutputTokens,
+	}
+}
+
+// fromSDK converts back, so the phone is told exactly what is stored rather than
+// what it last sent.
+func fromSDK(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
+	return mobiletransport.GenerationSettings{
+		ThinkingLevel:    string(g.ThinkingLevel),
+		Temperature:      g.Temperature,
+		TopP:             g.TopP,
+		TopK:             g.TopK,
+		StopSequences:    g.StopSequences,
+		PresencePenalty:  g.PresencePenalty,
+		FrequencyPenalty: g.FrequencyPenalty,
+		Seed:             g.Seed,
+		MaxOutputTokens:  g.MaxOutputTokens,
+	}
+}
+
+// applySessionGeneration writes a chat's own knobs and pushes the session file to
+// D1, so the setting takes effect on the next turn and survives a restart
+// (CHANGE-077).
+func (m modelStore) applySessionGeneration(ctx context.Context, sessionID string, g mobiletransport.GenerationSettings, clear bool) error {
+	if m.sessions == nil {
+		return errors.New("runtime: session manager is not available")
+	}
+	path, err := m.sessions.ApplyGeneration(ctx, sessionID, toSDK(g), clear)
+	if err != nil {
+		return err
+	}
+	if m.client != nil {
+		if _, err := m.client.PushSession(ctx, sessionID, path); err != nil {
+			return fmt.Errorf("persist generation settings: %w", err)
+		}
+	}
+	return nil
 }
 
 // sessionRouteChange decides what a ModelChoice request does to the main route.

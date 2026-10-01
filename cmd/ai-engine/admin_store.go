@@ -617,15 +617,41 @@ func (a *adminStore) saveProvidersLocked(ctx context.Context, file runtime.Provi
 	return nil
 }
 
+// systemGenerationToWire converts the main agent's stored knobs for the phone.
+func systemGenerationToWire(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
+	return fromSDK(g)
+}
+
+// subGenerationToWire converts the worker agent's stored knobs for the phone.
+// The worker config carries its own temperature, thinking level and output cap,
+// which are the subset of the knob set that applies to a delegated turn.
+func subGenerationToWire(sub sdk.SubAgentConfig) mobiletransport.GenerationSettings {
+	out := mobiletransport.GenerationSettings{
+		ThinkingLevel:   string(sub.ThinkingLevel),
+		Temperature:     sub.Temperature,
+		MaxOutputTokens: sub.MaxOutputTokens,
+	}
+	return out
+}
+
 func (a *adminStore) Settings(context.Context) (mobiletransport.SettingsView, error) {
 	cfg, err := runtime.LoadSystemConfig(a.systemPath)
 	if err != nil {
 		return mobiletransport.SettingsView{}, err
 	}
 	view := mobiletransport.SettingsView{
-		Main:       mobiletransport.AgentSettings{Provider: cfg.Provider, Model: cfg.Model},
-		Sub:        mobiletransport.AgentSettings{Provider: cfg.SubAgent.Provider, Model: cfg.SubAgent.Model},
+		Main: mobiletransport.AgentSettings{
+			Provider: cfg.Provider, Model: cfg.Model,
+			Generation: systemGenerationToWire(cfg.Settings()),
+		},
+		Sub: mobiletransport.AgentSettings{
+			Provider: cfg.SubAgent.Provider, Model: cfg.SubAgent.Model,
+			Generation: subGenerationToWire(cfg.SubAgent),
+		},
 		SubEnabled: cfg.SubAgent.Enabled,
+	}
+	if view.Main.Generation.MaxOutputTokens == 0 {
+		view.Main.Generation.MaxOutputTokens = cfg.MaxOutputTokens
 	}
 	if view.Main.Provider == "" {
 		view.Main.Provider = string(a.mainRoute.Provider)
@@ -652,8 +678,25 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	}
 	cfg.Provider = strings.TrimSpace(settings.Main.Provider)
 	cfg.Model = strings.TrimSpace(settings.Main.Model)
+	cfg.Generation = toSDK(settings.Main.Generation)
+	cfg.MaxOutputTokens = settings.Main.Generation.MaxOutputTokens
 	cfg.SubAgent.Provider = strings.TrimSpace(settings.Sub.Provider)
 	cfg.SubAgent.Model = strings.TrimSpace(settings.Sub.Model)
+	if settings.Main.Generation.Temperature != nil {
+		cfg.SubAgent.Temperature = settings.Main.Generation.Temperature
+	} else {
+		cfg.SubAgent.Temperature = nil
+	}
+	if level := strings.TrimSpace(settings.Main.Generation.ThinkingLevel); level != "" {
+		cfg.SubAgent.ThinkingLevel = sdk.ThinkingLevel(level)
+	} else {
+		cfg.SubAgent.ThinkingLevel = ""
+	}
+	if settings.Sub.Generation.MaxOutputTokens > 0 {
+		cfg.SubAgent.MaxOutputTokens = settings.Sub.Generation.MaxOutputTokens
+	} else {
+		cfg.SubAgent.MaxOutputTokens = settings.Main.Generation.MaxOutputTokens
+	}
 	if settings.SubEnabled {
 		cfg.SubAgent.Enabled = true
 	}
@@ -674,8 +717,14 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	}
 	a.applySettings(cfg)
 	return mobiletransport.SettingsView{
-		Main:       mobiletransport.AgentSettings{Provider: cfg.Provider, Model: cfg.Model},
-		Sub:        mobiletransport.AgentSettings{Provider: cfg.SubAgent.Provider, Model: cfg.SubAgent.Model},
+		Main: mobiletransport.AgentSettings{
+			Provider: cfg.Provider, Model: cfg.Model,
+			Generation: systemGenerationToWire(cfg.Settings()),
+		},
+		Sub: mobiletransport.AgentSettings{
+			Provider: cfg.SubAgent.Provider, Model: cfg.SubAgent.Model,
+			Generation: subGenerationToWire(cfg.SubAgent),
+		},
 		SubEnabled: cfg.SubAgent.Enabled,
 	}, nil
 }
@@ -710,9 +759,14 @@ func (a *adminStore) applySettings(cfg runtime.SystemConfig) {
 			a.agent.SubAgentConfig.Model = cfg.SubAgent.Model
 		}
 		a.agent.SubAgentConfig.Enabled = cfg.SubAgent.Enabled
+		// The worker's own knobs, applied live so a change from the phone takes
+		// effect on the next delegation rather than after a restart (CHANGE-077).
+		a.agent.SubAgentConfig.Temperature = cfg.SubAgent.Temperature
+		a.agent.SubAgentConfig.ThinkingLevel = cfg.SubAgent.ThinkingLevel
+		a.agent.SubAgentConfig.MaxOutputTokens = cfg.SubAgent.MaxOutputTokens
 	}
 	if a.sessions != nil {
-		route := sdk.SessionConfig{Provider: sdk.ProviderID(cfg.Provider), Model: cfg.Model}
+		route := mainRouteFrom(cfg)
 		if route.Provider == "" {
 			route = a.defaultRoute()
 		}
@@ -720,7 +774,29 @@ func (a *adminStore) applySettings(cfg runtime.SystemConfig) {
 			a.sessions.AdoptProviders(a.manager.Rt().ProviderConfigs, route)
 		}
 	}
-	a.mainRoute = sdk.SessionConfig{Provider: sdk.ProviderID(cfg.Provider), Model: cfg.Model}
+	a.mainRoute = mainRouteFrom(cfg)
+}
+
+// mainRouteFrom is the session config a stored system config implies, knobs
+// included, so the boot default and a live reload describe the same thing.
+func mainRouteFrom(cfg runtime.SystemConfig) sdk.SessionConfig {
+	g := cfg.Settings()
+	if g.MaxOutputTokens == 0 {
+		g.MaxOutputTokens = cfg.MaxOutputTokensFor()
+	}
+	return sdk.SessionConfig{
+		Provider:         sdk.ProviderID(cfg.Provider),
+		Model:            cfg.Model,
+		ThinkingLevel:    g.ThinkingLevel,
+		Temperature:      g.Temperature,
+		TopP:             g.TopP,
+		TopK:             g.TopK,
+		StopSequences:    g.StopSequences,
+		PresencePenalty:  g.PresencePenalty,
+		FrequencyPenalty: g.FrequencyPenalty,
+		Seed:             g.Seed,
+		MaxOutputTokens:  g.MaxOutputTokens,
+	}
 }
 
 func (a *adminStore) defaultRoute() sdk.SessionConfig {
