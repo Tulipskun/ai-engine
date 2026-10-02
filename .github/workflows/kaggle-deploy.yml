@@ -47,6 +47,19 @@ jobs:
       - name: Install the Kaggle CLI
         run: pipx install kaggle==2.2.4
 
+      - name: Check for the token
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          if [ -z "${KAGGLE_API_TOKEN:-}" ]; then
+            echo "::error::KAGGLE_API_TOKEN is not set. Add it under" \
+                 "Settings -> Secrets and variables -> Actions -> New repository" \
+                 "secret, with access to this repository. It needs the kernels" \
+                 "write permission; Kaggle issues it at" \
+                 "https://www.kaggle.com/settings/account"
+            exit 1
+          fi
+
       - name: Read the kernel id from the notebook metadata
         id: meta
         run: |
