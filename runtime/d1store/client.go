@@ -922,3 +922,56 @@ func (c *Client) EnsureTurnFooter(ctx context.Context) error {
 	}
 	return nil
 }
+
+// HandoverKey is where a running daemon says it is serving, so a second daemon
+// can tell that it is the newer one and stand itself down. It is deliberately
+// not the nodes row: nodes holds the single address the phone reads, so two
+// daemons writing it would make the address flicker between them.
+const HandoverKey = "handover/ready"
+
+// Handover is one daemon's claim to be the one currently serving.
+type Handover struct {
+	Instance string `json:"instance"`
+	Tunnel   string `json:"tunnel"`
+	Version  string `json:"version,omitempty"`
+	At       int64  `json:"at"`
+}
+
+// ClaimHandover records that this daemon is up and where it is reachable. It is
+// written by the daemon rather than by the thing hosting it, because the daemon
+// is what holds the Cloudflare token — the host has none, and CON-012 says the
+// system must not grow a second credential for this.
+func (c *Client) ClaimHandover(ctx context.Context, instance, tunnel, version string, at int64) error {
+	raw, err := json.Marshal(Handover{Instance: instance, Tunnel: tunnel, Version: version, At: at})
+	if err != nil {
+		return err
+	}
+	_, err = c.query(ctx,
+		`INSERT INTO state(key, value, updated_at) VALUES(?, ?, unixepoch())
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
+		[]string{HandoverKey, string(raw)})
+	return err
+}
+
+// Successor returns the daemon that took over, if it started after us. Comparing
+// the start time is what keeps a fresh instance from reading the record of the one
+// it replaced and standing itself down on the spot; without it two daemons would
+// each wait for the other and neither would ever serve.
+func (c *Client) Successor(ctx context.Context, startedAt int64) (Handover, bool, error) {
+	res, err := c.query(ctx, "SELECT value FROM state WHERE key = ? LIMIT 1", []string{HandoverKey})
+	if err != nil {
+		return Handover{}, false, err
+	}
+	list, err := queryInto[struct{ Value string }](res.rows)
+	if err != nil || len(list) == 0 || list[0].Value == "" {
+		return Handover{}, false, err
+	}
+	var claim Handover
+	if err := json.Unmarshal([]byte(list[0].Value), &claim); err != nil {
+		return Handover{}, false, nil
+	}
+	if claim.At <= startedAt {
+		return Handover{}, false, nil
+	}
+	return claim, true, nil
+}

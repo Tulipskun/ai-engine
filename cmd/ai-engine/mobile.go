@@ -65,6 +65,26 @@ type runtimeMobileConfig struct {
 	syncSessions  bool
 }
 
+// instanceID names this daemon in the handover record: the build plus the moment
+// it started, which is what the successor check compares against.
+func instanceID() string {
+	return fmt.Sprintf("%s-%d", buildLabel(), startedAt)
+}
+
+// buildLabel is the stamped version, or a placeholder when the build carried no
+// stamp, so a handover record is still readable.
+func buildLabel() string {
+	if v := strings.TrimSpace(version); v != "" && v != "dev" {
+		return v
+	}
+	return "daemon"
+}
+
+// startedAt and instanceID identify this daemon for the handover: two daemons
+// running the same build are otherwise indistinguishable, and the claim is what
+// tells the older one it has been replaced.
+var startedAt = time.Now().UnixNano() / int64(time.Millisecond)
+
 func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, reloadProviders func(context.Context) error) (*mobileRuntime, error) {
 	api := strings.TrimSpace(cfg.cloudflareAPI)
 	if api == "" {
@@ -103,6 +123,29 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 				log.Printf("mobile: announcing tunnel to D1 account=%s database=%s (%s)", target.AccountID, target.Name, target.DatabaseID)
 			}
 			return client.Heartbeat(ctx, publicURL, rt.transport.Version())
+		},
+		Claim: func(ctx context.Context, publicURL string) error {
+			return client.ClaimHandover(ctx, instanceID(), publicURL, rt.transport.Version(), startedAt)
+		},
+		Successor: func(ctx context.Context) (string, bool) {
+			claim, replaced, err := client.Successor(ctx, startedAt)
+			if err != nil {
+				log.Printf("mobile: look for a successor: %v", err)
+				return "", false
+			}
+			if !replaced {
+				return "", false
+			}
+			return claim.Instance, true
+		},
+		StandDown: func(reason string) {
+			log.Printf("mobile: standing down: %s", reason)
+			go func() {
+				// Give the log line and the tunnel a moment to flush before the
+				// process goes, so whoever is watching the run sees why it ended.
+				time.Sleep(2 * time.Second)
+				os.Exit(0)
+			}()
 		},
 	})
 	return rt, nil

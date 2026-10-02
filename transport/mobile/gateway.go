@@ -138,6 +138,18 @@ type Config struct {
 	ReportError    func(sessionID, message string)     // shows a turn failure on the phone
 	Announce       func(context.Context, string) error // publishes the tunnel URL (D1 `nodes`)
 	InputBuffer    int
+	// Claim and Successor are the handover, kept beside Announce because they
+	// answer the same question from the other side: Claim says this daemon is the
+	// one serving, Successor says whether a newer one has taken that over. The
+	// host running the daemon may hold no credential of its own (CON-012), so
+	// this is the daemon doing it, with the token it already has once a phone
+	// has connected.
+	Claim     func(context.Context, string) error
+	Successor func(context.Context) (string, bool)
+	// StandDown is called with the reason when a newer daemon is serving. It
+	// ends the process rather than only the tunnel, because a host that keeps
+	// the run alive after being replaced is a session wasted.
+	StandDown func(reason string)
 }
 
 const defaultInputBuffer = 64
@@ -979,15 +991,23 @@ func (t *Transport) StartHTTP(ctx context.Context, listen string) (func(), error
 }
 
 func (t *Transport) announceLoop(ctx context.Context, publicURL string) {
-	if t.cfg.Announce == nil || t.cfg.Tokens == nil {
+	if t.cfg.Tokens == nil {
 		return
 	}
+	haveToken := func() bool { return t.cfg.Tokens.Get() != "" }
 	announce := func() {
-		if t.cfg.Tokens.Get() == "" {
+		if !haveToken() {
 			return // no phone connected yet: nothing to authenticate with
 		}
-		if err := t.cfg.Announce(ctx, publicURL); err != nil {
-			log.Printf("mobile: announce tunnel: %v", err)
+		if t.cfg.Announce != nil {
+			if err := t.cfg.Announce(ctx, publicURL); err != nil {
+				log.Printf("mobile: announce tunnel: %v", err)
+			}
+		}
+		if t.cfg.Claim != nil {
+			if err := t.cfg.Claim(ctx, publicURL); err != nil {
+				log.Printf("mobile: claim handover: %v", err)
+			}
 		}
 	}
 	go func() {
@@ -1001,6 +1021,34 @@ func (t *Transport) announceLoop(ctx context.Context, publicURL string) {
 			case <-ticker.C:
 				announce()
 			}
+		}
+	}()
+
+	// Looking for a replacement is separate from announcing: a daemon that has
+	// never had a phone connect has nothing to authenticate with, and it is also
+	// the one nobody has found yet, so it must not retire on its own account.
+	if t.cfg.Successor == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+			}
+			if !haveToken() {
+				continue
+			}
+			who, replaced := t.cfg.Successor(ctx)
+			if !replaced {
+				continue
+			}
+			log.Printf("mobile: another daemon is serving (%s) — standing down", who)
+			if t.cfg.StandDown != nil {
+				t.cfg.StandDown("replaced by " + who)
+			}
+			return
 		}
 	}()
 }
