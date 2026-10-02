@@ -4,14 +4,21 @@ The daemon runs on Kaggle CPU. The notebook clones this repository, installs the
 Go toolchain, runs the test suite, builds `cmd/ai-engine`, publishes a
 Cloudflare quick tunnel and keeps serving until its time is up.
 
-- `aixodia.ipynb` — the notebook itself
+- `aixodia.ipynb` — the daemon notebook: clone, build, test, serve
 - `kernel-metadata.json` — what `kaggle kernels push` needs, including the kernel id
+- `mirror/` — the D1 mirror watchdog as its own kernel, pushed with `-p deploy/kaggle/mirror`
 - `.github/workflows/kaggle-deploy.yml` — starts the runs (in the repository root)
 
 ```bash
 export KAGGLE_API_TOKEN=...        # token with kernels write permission
 kaggle kernels push -p deploy/kaggle -t 43200
 ```
+
+Two kernels are separate on purpose. The mirror reads `SCHEDULE` from the *daemon's*
+kernel output, so it needs a window of its own; sharing a kernel would mean both
+die at the same twelve-hour mark. It was previously one file carrying both, where
+the mirror cells found no `SCHEDULE` in their own output and skipped — inert
+weight in a notebook whose whole job is serving.
 
 `-t 43200` is twelve hours, the CPU cap. Kaggle takes the lower of that and its
 own maximum, so asking for the cap asks for as long as it allows.
@@ -77,6 +84,10 @@ which starts a run even though one is live.
 - Handover needs `CF_TOKEN` as a Kaggle secret so the notebook can read and write
   the announcement. Without it the notebook says `handover_disabled` and simply
   stops at its cap, which leaves a gap rather than a handover.
-- The notebook still carries the D1 mirror cells (0–6) from the mirror watchdog.
-  They find no `SCHEDULE` in their own output and skip, so they are inert, but
-  they are not what this notebook is for.
+- The daemon notebook keeps its own `pick_target` and `d1_query` for the handover
+  announcement. The account and database are discovered from the token, never
+  written down (REQ-046(3), CON-012).
+- If `CF_TOKEN` is missing the notebook prints `handover_disabled` and stops at
+  its cap instead of handing over — a gap, not a handover. The handover also
+  survives a D1 outage: a failed read or write is reported and the loop carries
+  on.

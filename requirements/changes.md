@@ -1318,3 +1318,23 @@ index.md, .github/workflows/kaggle-deploy.yml (ใหม่)
 Validation: ทุกเซลล์ผ่าน `compile()`; workflow ผ่าน YAML parse; logic การแยกสถานะ
 ทดสอบกับค่าจริงทั้ง 7 ของ `KernelWorkerStatus` แล้ว
 Status: accepted
+
+## CHANGE-080: แยก D1 mirror ออกเป็นอีก kernel
+New: notebook เดียวบรรจุทั้ง daemon (เซลล์ 7–10) และ D1 mirror watchdog (เซลล์ 0–6) ที่
+อ่าน `SCHEDULE` จาก kernel output **ของอีก notebook** ในไฟล์เดียวกัน เซลล์ mirror จึง
+หา `SCHEDULE` ใน output ตัวเองไม่เจอแล้วข้ามไปเงียบ ๆ (decision = skip) — ไม่มีอะไร
+เกิดขึ้นและไม่ใช่หน้าที่ของ notebook ที่มีหน้าที่ให้บริการ ตอนนี้แยกเป็น
+`deploy/kaggle/mirror/` พร้อม `kernel-metadata.json` ของตัวเอง (`kyomusen/aixodia-mirror`)
+แยก kernel จำเป็น ไม่ใช่เรื่องความเป็นระเบียบ เพราะ mirror ต้องอ่าน output ของ daemon
+และถ้าใช้ kernel เดียวกันทั้งคู่จะตายพร้อมกันที่เพดาน 12 ชั่วโมง
+พร้อมกันนั้น `KERNEL_T0` `KERNEL_BUDGET_S` `HANDOVER_LEAD_S` และ `ENTRY` ที่เพิ่งใส่ไป
+อยู่ในเซลล์ config ของ mirror จึงถูกตัดไปพร้อม ๆ กัน และ cell บริการของ daemon เรียก
+`pick_target`/`d1_query` ที่มาจากเซลล์ mirror — ตอนนี้ daemon มีของตัวเองทั้งสองตัว
+Impact: deploy/kaggle/aixodia.ipynb (เหลือ 6 เซลล์),
+deploy/kaggle/mirror/aixodia-mirror.ipynb + kernel-metadata.json (ใหม่),
+deploy/kaggle/README.md, index.md
+Validation: ทุกเซลล์ผ่าน `compile()`; รันเซลล์ config ของ daemon จริงแล้วได้
+ENTRY/KERNEL_T0 ครบและ `pick_target("")` คืนเหตุผลไม่ใช่ error; ทดสอบ
+`announce_ready`/`successor_seen`/`d1_read_state` ที่ดึงมาจากไฟล์จริงกับ D1 ปลอม ครบ 5 เส้นทาง
+(ประกาศตัวเอง, อ่านของตัวเอง, ตัวใหม่เจอของเก่า, ตัวเก่าเห็นตัวใหม่, D1 ล้ม)
+Status: accepted
