@@ -1,0 +1,95 @@
+name: Kaggle deploy
+
+# A Kaggle kernel cannot start another Kaggle kernel: there is no call for it
+# from inside a running one, and the token that would allow it must not exist
+# there (CON-012). So the successor is started from out here, where a token is
+# what this workflow is for.
+#
+# `kaggle kernels push` uploads the notebook *and runs it*, and `-t` sets how
+# long the run may last, which is how the twelve hours are requested.
+#
+# The notebook does the other half of the handover: it keeps serving until it
+# sees this workflow's run announce itself in D1, so the tunnel is never dropped.
+
+on:
+  schedule:
+    # Just inside a twelve-hour run, so the successor is up before the current
+    # kernel reaches its cap.
+    - cron: '23 */11 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/kaggle/**'
+      - 'cmd/**'
+      - 'sdk/**'
+      - 'runtime/**'
+      - 'transport/**'
+      - 'tools/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Start a run even though one is already active'
+        type: boolean
+        default: false
+
+concurrency:
+  group: kaggle-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Kaggle CLI
+        run: pipx install kaggle==2.2.4
+
+      - name: Read the kernel id from the notebook metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          id=$(python3 -c 'import json;print(json.load(open("deploy/kaggle/kernel-metadata.json"))["id"])')
+          echo "kernel=$id" >> "$GITHUB_OUTPUT"
+          echo "kernel is $id"
+
+      - name: Report whether a run is already live
+        id: current
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL: ${{ steps.meta.outputs.kernel }}
+        run: |
+          set -euo pipefail
+          export KAGGLE_API_TOKEN
+          status=$(kaggle kernels status "$KERNEL" 2>&1 || true)
+          echo "$status"
+          # The CLI prints: <kernel> has status "<STATUS>". The states that mean
+          # something is still up come from KernelWorkerStatus in the Kaggle SDK;
+          # COMPLETE and ERROR are the two that mean nothing is serving any more,
+          # and a missing run prints no status at all.
+          state=$(printf '%s' "$status" | sed -n 's/.*has status "\([A-Z_]*\)".*/\1/p')
+          echo "state=${state:-none}"
+          case "$state" in
+            COMPLETE|ERROR) echo "live=false" >> "$GITHUB_OUTPUT" ;;
+            QUEUED|RUNNING|NEW_SCRIPT|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED)
+              echo "live=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "live=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Start a run
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          LIVE: ${{ steps.current.outputs.live }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          export KAGGLE_API_TOKEN
+          if [ "$LIVE" = "true" ] && [ "$FORCE" != "true" ]; then
+            echo "a run is already live — leaving it. Use force=true to replace it."
+            exit 0
+          fi
+          # 43200s = 12h, the CPU cap. Kaggle takes the lower of this and its own
+          # maximum, so asking for the cap asks for as long as it allows.
+          kaggle kernels push -p deploy/kaggle -t 43200

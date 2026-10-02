@@ -1292,3 +1292,29 @@ runtime/system_config.go, runtime/provider_manager.go, cmd/ai-engine/main.go,
 cmd/ai-engine/admin_store.go, transport/mobile/admin.go,
 transport/mobile/history.go, requirements/constraints.md (CON-010 ยกเลิก),
 AIxodia (UI ตั้งค่าบนมือถือ)
+
+## CHANGE-079: รันบน Kaggle ให้ได้ 12 ชั่วโมงและส่งต่องานได้เอง
+New: (1) `TIME_CAP` เดิมนับจากตอน daemon เริ่ม (41400 วินาที) ซึ่งบวกเวลา clone/ติดตั้ง
+Go/รันเทสต์เข้าไปแล้ว รวมเป็นเกินเพดาน 12 ชั่วโมงของ kernel CPU ทำให้ถูกตัดกลางคำตอบ
+ตอนนี้เซลล์แรกบันทึก `KERNEL_T0` และนับจากตรงนั้น โดยมี `AIX_KERNEL_BUDGET_S`
+(ค่าเริ่มต้น 43200) `AIX_HANDOVER_LEAD_S` `AIX_HANDOVER_POLL_S`
+`AIX_HARD_STOP_MARGIN_S` ปรับจาก environment ได้โดยไม่ต้องแก้โค้ด
+(2) **kernel เรียก kernel อื่นไม่ได้** — ไม่มี API สำหรับสั่งรันจากข้างใน และ token ที่จะทำได้
+ต้องไม่มีที่นั่น (CON-012) การเปิดตัวใหม่จึงมาจากข้างนอก: `.github/workflows/kaggle-deploy.yml`
+รันทุก 11 ชั่วโมงและเมื่อมี push ที่แตะ daemon ด้วย `kaggle kernels push -t 43200`
+ซึ่งอัปโหลด notebook **และสั่งรัน** ในคำสั่งเดียว (`-t` คือการขอเวลารัน ตาม `--help`
+ของ `kaggle` 2.2.4) และข้ามการสั่งซ้ำถ้ายังมี run ที่ยัง live โดยอ่านสถานะจาก
+`KernelWorkerStatus` ของ SDK ตรง ๆ ไม่ใช่เดาจากข้อความ
+(3) ครึ่งที่เหลือคือการไม่ให้บริการหลุดระหว่างสองตัว: notebook เขียนประกาศตัวเองลง state key
+`handover/ready` เมื่อรู้ tunnel แล้ว แล้วยังให้บริการอยู่จนกว่าจะเห็นประกาศของตัวที่
+ประกาศ*หลังตัวเอง* เท่านั้น ไม่งั้นตัวใหม่จะอ่าน record ของตัวเก่าในการ poll แรกแล้วหยุดตัวเองทันที
+ประกาศแยกจากแถว `nodes` เพราะ `nodes` คือที่อยู่เดียวที่มือถืออ่าน ถ้าสองตัวเขียนพร้อมกัน
+ที่อยู่จะกระพริบไปมา (4) ปุ่มอัปเดตคือ push ที่แตะ daemon: workflow deploy, notebook clone
+`main` ตอนรันเสมอ และ stamp sha ลง `nodes.version` เพื่อบอกว่าตัวไหนกำลังตอบ
+Reason: ผู้ใช้ถามว่าตั้งให้รัน 12 ชม. เปิดตัวใหม่เองก่อนตัวเองตาย และอัปเดตได้ไหม —
+ตอบว่าได้ครึ่งเดียวและอีกครึ่งต้องทำฝั่งนอก จึงตอบตามของจริงแล้วทำส่วนที่ทำได้ให้ครบ
+Impact: deploy/kaggle/aixodia.ipynb (เซลล์ 1 และ 10), deploy/kaggle/README.md,
+index.md, .github/workflows/kaggle-deploy.yml (ใหม่)
+Validation: ทุกเซลล์ผ่าน `compile()`; workflow ผ่าน YAML parse; logic การแยกสถานะ
+ทดสอบกับค่าจริงทั้ง 7 ของ `KernelWorkerStatus` แล้ว
+Status: accepted
