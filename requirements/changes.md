@@ -1338,3 +1338,20 @@ ENTRY/KERNEL_T0 ครบและ `pick_target("")` คืนเหตุผล
 `announce_ready`/`successor_seen`/`d1_read_state` ที่ดึงมาจากไฟล์จริงกับ D1 ปลอม ครบ 5 เส้นทาง
 (ประกาศตัวเอง, อ่านของตัวเอง, ตัวใหม่เจอของเก่า, ตัวเก่าเห็นตัวใหม่, D1 ล้ม)
 Status: accepted
+
+## CHANGE-081: ถอดการ deploy บน Kaggle ออกจาก repository
+New: ผู้ใช้ระบุว่า Kaggle เป็น "แค่ตัวรัน ไม่เกี่ยวกับ repo ใดๆ" จึงเอา
+`deploy/kaggle/` (notebook, `kernel-metadata.json`, README) และ
+`.github/workflows/kaggle-deploy.yml` ออกจาก repository ทั้งหมด ไม่มีไฟล์หรือการอ้างถึง
+Kaggle เหลือในนี้อีก ตัว repository ของ daemon ไม่ควรแบกเรื่องการ deploy ของสภาพแวดล้อม
+ที่รันมัน และ `deploy/` ทั้งโฟลเดอร์ไม่มีอะไรเหลือจึงถูกลบ
+kernel ไม่ clone repository อีกต่อไป แต่รับไบนารีที่ build แล้วผ่าน Kaggle dataset
+ที่ attach ไว้ ซึ่งอ่านได้ที่ `/kaggle/input/` โดยไม่ต้องมี token ในตัว kernel ด้วย
+เหตุผลของการเลิกใช้ GitHub Actions เป็นตัวสั่ง: ตัวสั่งต้องถือ `KAGGLE_API_TOKEN`
+ซึ่งเป็น secret ของ repository ทั้งที่เรื่องนี้ไม่ควรอยู่ใน repo (ดู CHANGE-077 ถึง
+ข้อจำกัดเรื่อง credential) ผู้ใช้เลือกให้ตัวสั่งอยู่ฝั่ง Kaggle
+Impact: ลบ `deploy/` ทั้งโฟลเดอร์, ลบ `.github/workflows/kaggle-deploy.yml`,
+แก้ `index.md` (เอาแถวที่ชี้ไป `deploy/kaggle/`), requirements/changes.md
+Validation: `grep -ri kaggle` ในโค้ดและเอกสารของ repo ไม่เหลือนอกจากบันทึกใน
+changes.md ซึ่งเป็นประวัติที่ append-only แล้ว; `go build ./...` และ `go test ./...` ผ่าน
+Status: accepted
