@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -187,5 +188,83 @@ func TestSessionPatchCanClearTheKnobs(t *testing.T) {
 	}
 	if choice := models.choices["s1"]; !choice.ClearGeneration {
 		t.Fatal("the clear was not passed on to the store")
+	}
+}
+
+// A save that only picks a model must not touch the knobs. Replacing the whole
+// generation block on such a save erased a hand-edited temperature from
+// config/system.json and from the D1 row written from it, with nothing said
+// (CHANGE-077).
+func TestSavingOnlyTheRouteLeavesTheKnobsAlone(t *testing.T) {
+	warm := 0.3
+	wide := 0.9
+	stored := GenerationSettings{
+		ThinkingLevel:   "high",
+		Temperature:     &warm,
+		TopP:            &wide,
+		MaxOutputTokens: 4096,
+	}
+
+	// What the app sends when the reader changed nothing but the model.
+	sent := GenerationSettings{}
+	merged := sent.Merge(stored, nil)
+
+	if merged.Temperature == nil || *merged.Temperature != 0.3 {
+		t.Errorf("temperature was erased by a save that never mentioned it: %v", merged.Temperature)
+	}
+	if merged.TopP == nil || *merged.TopP != 0.9 {
+		t.Errorf("top_p was erased: %v", merged.TopP)
+	}
+	if merged.ThinkingLevel != "high" {
+		t.Errorf("thinking level was erased: %q", merged.ThinkingLevel)
+	}
+	if merged.MaxOutputTokens != 4096 {
+		t.Errorf("output cap was erased: %d", merged.MaxOutputTokens)
+	}
+}
+
+func TestNamingAKnobRemovesOnlyThatOne(t *testing.T) {
+	warm, wide := 0.3, 0.9
+	stored := GenerationSettings{Temperature: &warm, TopP: &wide, ThinkingLevel: "high", MaxOutputTokens: 2048}
+
+	merged := GenerationSettings{Temperature: func() *float64 { v := 0.5; return &v }()}.
+		Merge(stored, []string{"temperature"})
+
+	if merged.Temperature != nil {
+		t.Errorf("a named knob survived: %v", *merged.Temperature)
+	}
+	if merged.TopP == nil || *merged.TopP != 0.9 {
+		t.Errorf("clearing one knob took another with it: %v", merged.TopP)
+	}
+	if merged.ThinkingLevel != "high" {
+		t.Errorf("clearing one knob took the reasoning level with it: %q", merged.ThinkingLevel)
+	}
+	if merged.MaxOutputTokens != 2048 {
+		t.Errorf("clearing one knob took the output cap with it: %d", merged.MaxOutputTokens)
+	}
+}
+
+func TestEveryKnobNameClearsSomething(t *testing.T) {
+	warm, wide, top, present, freq := 0.3, 0.9, 0.5, 1.0, -1.0
+	seed := int64(7)
+	stored := GenerationSettings{
+		ThinkingLevel: "high", Temperature: &warm, TopP: &wide, TopK: &top,
+		StopSequences: []string{"END"}, PresencePenalty: &present, FrequencyPenalty: &freq,
+		Seed: &seed, MaxOutputTokens: 1024,
+	}
+	for _, name := range MergeKnobNames() {
+		merged := GenerationSettings{}.Merge(stored, []string{name})
+		if reflect.DeepEqual(merged, stored) {
+			t.Errorf("clearing %q changed nothing", name)
+		}
+	}
+}
+
+func TestAnUnknownClearNameIsRefusedRatherThanIgnored(t *testing.T) {
+	if err := ValidateCleared([]string{"temperature"}); err != nil {
+		t.Fatalf("a real knob name was refused: %v", err)
+	}
+	if err := ValidateCleared([]string{"temprature"}); err == nil {
+		t.Fatal("a misspelled knob name was accepted and would have been ignored")
 	}
 }

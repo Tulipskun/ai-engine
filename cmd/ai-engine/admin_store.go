@@ -678,24 +678,42 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	}
 	cfg.Provider = strings.TrimSpace(settings.Main.Provider)
 	cfg.Model = strings.TrimSpace(settings.Main.Model)
-	cfg.Generation = toSDK(settings.Main.Generation)
-	cfg.MaxOutputTokens = settings.Main.Generation.MaxOutputTokens
 	cfg.SubAgent.Provider = strings.TrimSpace(settings.Sub.Provider)
 	cfg.SubAgent.Model = strings.TrimSpace(settings.Sub.Model)
-	if settings.Main.Generation.Temperature != nil {
-		cfg.SubAgent.Temperature = settings.Main.Generation.Temperature
-	} else {
-		cfg.SubAgent.Temperature = nil
-	}
-	if level := strings.TrimSpace(settings.Main.Generation.ThinkingLevel); level != "" {
-		cfg.SubAgent.ThinkingLevel = sdk.ThinkingLevel(level)
-	} else {
-		cfg.SubAgent.ThinkingLevel = ""
-	}
-	if settings.Sub.Generation.MaxOutputTokens > 0 {
-		cfg.SubAgent.MaxOutputTokens = settings.Sub.Generation.MaxOutputTokens
-	} else {
-		cfg.SubAgent.MaxOutputTokens = settings.Main.Generation.MaxOutputTokens
+	// Merge, never replace: a save that only picked a model sends an empty
+	// generation block, and replacing would erase a temperature somebody set by
+	// hand in this file or in the D1 copy of it, without a word (CHANGE-077).
+	mainKnobs := settings.Main.Generation.Merge(
+		mobiletransport.GenerationSettings{
+			ThinkingLevel:    string(cfg.Settings().ThinkingLevel),
+			Temperature:      cfg.Settings().Temperature,
+			TopP:             cfg.Settings().TopP,
+			TopK:             cfg.Settings().TopK,
+			StopSequences:    cfg.Settings().StopSequences,
+			PresencePenalty:  cfg.Settings().PresencePenalty,
+			FrequencyPenalty: cfg.Settings().FrequencyPenalty,
+			Seed:             cfg.Settings().Seed,
+			MaxOutputTokens:  cfg.MaxOutputTokensFor(),
+		},
+		settings.Main.ClearKnobs,
+	)
+	cfg.Generation = toSDK(mainKnobs)
+	cfg.MaxOutputTokens = mainKnobs.MaxOutputTokens
+	subKnobs := settings.Sub.Generation.Merge(
+		mobiletransport.GenerationSettings{
+			ThinkingLevel:   string(cfg.SubAgent.ThinkingLevel),
+			Temperature:     cfg.SubAgent.Temperature,
+			MaxOutputTokens: cfg.SubAgent.MaxOutputTokens,
+		},
+		append(settings.Sub.ClearKnobs, "top_p", "top_k", "stop_sequences", "presence_penalty", "frequency_penalty", "seed"),
+	)
+	// A worker inherits the parent's knobs, so the ones the worker cannot own
+	// follow the main agent rather than being stranded on a value it was never told about.
+	cfg.SubAgent.Temperature = subKnobs.Temperature
+	cfg.SubAgent.ThinkingLevel = sdk.ThinkingLevel(subKnobs.ThinkingLevel)
+	cfg.SubAgent.MaxOutputTokens = subKnobs.MaxOutputTokens
+	if cfg.SubAgent.MaxOutputTokens == 0 {
+		cfg.SubAgent.MaxOutputTokens = mainKnobs.MaxOutputTokens
 	}
 	if settings.SubEnabled {
 		cfg.SubAgent.Enabled = true

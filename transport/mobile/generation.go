@@ -85,3 +85,86 @@ func inRange(name string, v, lo, hi float64) error {
 	}
 	return nil
 }
+
+// MergeKnobNames lists every name Merge understands, so a caller can refuse one
+// it does not rather than ignoring it in silence.
+func MergeKnobNames() []string {
+	return []string{
+		"thinking_level", "temperature", "top_p", "top_k", "stop_sequences",
+		"presence_penalty", "frequency_penalty", "seed", "max_output_tokens",
+	}
+}
+
+// ValidateCleared refuses a knob name that would otherwise be silently dropped.
+func ValidateCleared(lists ...[]string) error {
+	known := map[string]bool{}
+	for _, name := range MergeKnobNames() {
+		known[name] = true
+	}
+	for _, list := range lists {
+		for _, name := range list {
+			if !known[name] {
+				return fmt.Errorf("clear_knobs: %q is not a setting", name)
+			}
+		}
+	}
+	return nil
+}
+
+// Merge writes the knobs the caller actually sent over a stored set. A field that
+// was not sent keeps the stored value; a field named in cleared is removed. This
+// is what keeps "not mentioned" and "delete it" from being the same request
+// (CHANGE-077).
+func (g GenerationSettings) Merge(stored GenerationSettings, cleared []string) GenerationSettings {
+	out := stored
+	if g.ThinkingLevel != "" {
+		out.ThinkingLevel = g.ThinkingLevel
+	}
+	if g.Temperature != nil {
+		out.Temperature = g.Temperature
+	}
+	if g.TopP != nil {
+		out.TopP = g.TopP
+	}
+	if g.TopK != nil {
+		out.TopK = g.TopK
+	}
+	if len(g.StopSequences) > 0 {
+		out.StopSequences = g.StopSequences
+	}
+	if g.PresencePenalty != nil {
+		out.PresencePenalty = g.PresencePenalty
+	}
+	if g.FrequencyPenalty != nil {
+		out.FrequencyPenalty = g.FrequencyPenalty
+	}
+	if g.Seed != nil {
+		out.Seed = g.Seed
+	}
+	if g.MaxOutputTokens > 0 {
+		out.MaxOutputTokens = g.MaxOutputTokens
+	}
+	for _, knob := range cleared {
+		switch knob {
+		case "thinking_level":
+			out.ThinkingLevel = ""
+		case "temperature":
+			out.Temperature = nil
+		case "top_p":
+			out.TopP = nil
+		case "top_k":
+			out.TopK = nil
+		case "stop_sequences":
+			out.StopSequences = nil
+		case "presence_penalty":
+			out.PresencePenalty = nil
+		case "frequency_penalty":
+			out.FrequencyPenalty = nil
+		case "seed":
+			out.Seed = nil
+		case "max_output_tokens":
+			out.MaxOutputTokens = 0
+		}
+	}
+	return out
+}

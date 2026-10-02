@@ -48,6 +48,11 @@ type AgentSettings struct {
 	Provider   string             `json:"provider"`
 	Model      string             `json:"model"`
 	Generation GenerationSettings `json:"generation"`
+	// ClearKnobs names the settings to remove. A knob that was simply not sent has
+	// to mean "leave what is stored alone", because a save that only picks a model
+	// would otherwise quietly drop a temperature somebody set by hand in the
+	// config file, or the D1 copy of it (CHANGE-077).
+	ClearKnobs []string `json:"clear_knobs,omitempty"`
 }
 
 type SettingsView struct {

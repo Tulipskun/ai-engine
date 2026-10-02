@@ -246,7 +246,13 @@ func (m *SessionManager) ListSessions(limit int) ([]sdk.SessionInfo, error) {
 // session database it wrote to, so the caller can push that file to D1. The knobs
 // are set through the session setters so the same bounds apply and the change is
 // persisted by the same path as everything else about the session (CHANGE-077).
-func (m *SessionManager) ApplyGeneration(ctx context.Context, sessionID string, settings sdk.GenerationSettings, clear bool) (string, error) {
+func (m *SessionManager) ApplyGeneration(
+	ctx context.Context,
+	sessionID string,
+	settings sdk.GenerationSettings,
+	clear bool,
+	clearKnobs []string,
+) (string, error) {
 	if m == nil {
 		return "", errors.New("runtime: session manager is nil")
 	}
@@ -274,48 +280,58 @@ func (m *SessionManager) ApplyGeneration(ctx context.Context, sessionID string, 
 		}
 		return sdk.SessionDBPath(m.dir, sessionID), nil
 	}
-	if settings.Temperature != nil {
-		if err := session.SetTemperature(*settings.Temperature); err != nil {
-			return "", err
-		}
+	// A knob that was not sent keeps whatever the chat already had; only a name
+	// in cleared is removed. Replacing the whole set would mean that asking for a
+	// temperature silently took the chat's reasoning level with it (CHANGE-077).
+	removing := make(map[string]bool, len(clearKnobs))
+	for _, name := range clearKnobs {
+		removing[name] = true
 	}
-	if settings.ThinkingLevel != "" {
-		if err := session.SetThinkingLevel(sdk.ThinkingLevel(settings.ThinkingLevel)); err != nil {
-			return "", err
-		}
+	sets := []struct {
+		name    string
+		applied bool
+		set     func() error
+		clear   func() error
+	}{
+		{"temperature", settings.Temperature != nil,
+			func() error { return session.SetTemperature(*settings.Temperature) },
+			func() error { return session.ClearTemperature() }},
+		{"thinking_level", settings.ThinkingLevel != "",
+			func() error { return session.SetThinkingLevel(settings.ThinkingLevel) },
+			func() error { return session.ClearThinkingLevel() }},
+		{"top_p", settings.TopP != nil,
+			func() error { return session.SetTopP(*settings.TopP) },
+			func() error { return session.ClearTopP() }},
+		{"top_k", settings.TopK != nil,
+			func() error { return session.SetTopK(*settings.TopK) },
+			func() error { return session.ClearTopK() }},
+		{"stop_sequences", len(settings.StopSequences) > 0,
+			func() error { return session.SetStopSequences(settings.StopSequences) },
+			func() error { return session.ClearStopSequences() }},
+		{"presence_penalty", settings.PresencePenalty != nil,
+			func() error { return session.SetPresencePenalty(*settings.PresencePenalty) },
+			func() error { return session.ClearPresencePenalty() }},
+		{"frequency_penalty", settings.FrequencyPenalty != nil,
+			func() error { return session.SetFrequencyPenalty(*settings.FrequencyPenalty) },
+			func() error { return session.ClearFrequencyPenalty() }},
+		{"seed", settings.Seed != nil,
+			func() error { return session.SetSeed(*settings.Seed) },
+			func() error { return session.ClearSeed() }},
+		{"max_output_tokens", settings.MaxOutputTokens > 0,
+			func() error { return session.SetMaxOutputTokens(settings.MaxOutputTokens) },
+			func() error { return session.SetMaxOutputTokens(0) }},
 	}
-	if settings.TopP != nil {
-		if err := session.SetTopP(*settings.TopP); err != nil {
-			return "", err
+	for _, knob := range sets {
+		switch {
+		case removing[knob.name]:
+			if err := knob.clear(); err != nil {
+				return "", err
+			}
+		case knob.applied:
+			if err := knob.set(); err != nil {
+				return "", err
+			}
 		}
-	}
-	if settings.TopK != nil {
-		if err := session.SetTopK(*settings.TopK); err != nil {
-			return "", err
-		}
-	}
-	if len(settings.StopSequences) > 0 {
-		if err := session.SetStopSequences(settings.StopSequences); err != nil {
-			return "", err
-		}
-	}
-	if settings.PresencePenalty != nil {
-		if err := session.SetPresencePenalty(*settings.PresencePenalty); err != nil {
-			return "", err
-		}
-	}
-	if settings.FrequencyPenalty != nil {
-		if err := session.SetFrequencyPenalty(*settings.FrequencyPenalty); err != nil {
-			return "", err
-		}
-	}
-	if settings.Seed != nil {
-		if err := session.SetSeed(*settings.Seed); err != nil {
-			return "", err
-		}
-	}
-	if err := session.SetMaxOutputTokens(settings.MaxOutputTokens); err != nil {
-		return "", err
 	}
 	return sdk.SessionDBPath(m.dir, sessionID), nil
 }

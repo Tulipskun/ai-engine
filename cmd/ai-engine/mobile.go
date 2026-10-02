@@ -220,7 +220,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		if choice.Generation != nil {
 			g = *choice.Generation
 		}
-		if err := m.applySessionGeneration(ctx, sessionID, g, choice.ClearGeneration); err != nil {
+		if err := m.applySessionGeneration(ctx, sessionID, g, choice.ClearGeneration, choice.ClearKnobs); err != nil {
 			return mobiletransport.SessionRow{}, fmt.Errorf("generation settings: %w", err)
 		}
 	}
@@ -361,11 +361,20 @@ func fromSDK(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
 // applySessionGeneration writes a chat's own knobs and pushes the session file to
 // D1, so the setting takes effect on the next turn and survives a restart
 // (CHANGE-077).
-func (m modelStore) applySessionGeneration(ctx context.Context, sessionID string, g mobiletransport.GenerationSettings, clear bool) error {
+func (m modelStore) applySessionGeneration(
+	ctx context.Context,
+	sessionID string,
+	g mobiletransport.GenerationSettings,
+	clear bool,
+	clearKnobs []string,
+) error {
 	if m.sessions == nil {
 		return errors.New("runtime: session manager is not available")
 	}
-	path, err := m.sessions.ApplyGeneration(ctx, sessionID, toSDK(g), clear)
+	if clear {
+		clearKnobs = append(clearKnobs, mobiletransport.MergeKnobNames()...)
+	}
+	path, err := m.sessions.ApplyGeneration(ctx, sessionID, toSDK(g), clear, clearKnobs)
 	if err != nil {
 		return err
 	}
