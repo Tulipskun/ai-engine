@@ -108,7 +108,7 @@ func (e *planningToolExecutor) Execute(ctx context.Context, call ToolCall) ToolR
 	if e == nil {
 		return ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
 	}
-	if call.Name == "delegate_task" || call.Name == "delegate_stop" || call.Name == "delegate_message" || call.Name == "delegate_message" || call.Name == "delegate_result" {
+	if call.Name == "delegate_task" || call.Name == "delegate_stop" || call.Name == "delegate_message" || call.Name == "delegate_result" {
 		if e.subAgent == nil {
 			return ToolResult{ID: call.ID, Content: "sub-agent is not configured", IsError: true}
 		}
