@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -582,10 +581,7 @@ func (a *adminStore) saveProvidersLocked(ctx context.Context, file runtime.Provi
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(a.providerPath), 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(a.providerPath, append(raw, '\n'), 0o600); err != nil {
+	if err := runtime.SaveProviderFile(a.providerPath, file); err != nil {
 		return err
 	}
 	if a.client != nil {
@@ -722,10 +718,10 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	if err != nil {
 		return mobiletransport.SettingsView{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(a.systemPath), 0o700); err != nil {
-		return mobiletransport.SettingsView{}, err
-	}
-	if err := os.WriteFile(a.systemPath, append(raw, '\n'), 0o600); err != nil {
+	// One writer for this file: runtime.SaveSystemConfig owns the mkdir/chmod/
+	// write path, so the file cannot drift between the phone's save and the
+	// config loader's idea of its permissions (CHANGE-099).
+	if err := runtime.SaveSystemConfig(a.systemPath, cfg); err != nil {
 		return mobiletransport.SettingsView{}, err
 	}
 	if a.client != nil {

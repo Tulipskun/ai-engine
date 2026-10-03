@@ -73,7 +73,6 @@ type Outbound struct {
 	Agent        string          `json:"agent,omitempty"`
 	JobID        string          `json:"job_id,omitempty"`
 	Stage        string          `json:"stage,omitempty"`
-	Seq          int64           `json:"seq,omitempty"`
 	Text         string          `json:"text,omitempty"`
 	Content      []ContentPart   `json:"content,omitempty"`
 	ToolCall     *ToolCall       `json:"tool_call,omitempty"`
@@ -251,7 +250,6 @@ type Transport struct {
 
 	mu   sync.Mutex
 	subs map[string]map[subscriber]struct{}
-	seq  int64
 
 	inputs chan sdk.Input
 

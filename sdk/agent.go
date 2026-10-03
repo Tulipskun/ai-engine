@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-var (
-	ErrAgentMaxIterations    = errors.New("sdk: agent reached maximum iterations")
-	ErrAgentRetriesExhausted = errors.New("sdk: agent retries exhausted")
-)
+var ErrAgentRetriesExhausted = errors.New("sdk: agent retries exhausted")
 
 type ToolExecutor interface {
 	Definitions() []Tool

@@ -281,11 +281,6 @@ func (s *Session) RotateAPIKey() (string, error) {
 	return key, nil
 }
 func (s *Session) History() []Turn { s.mu.RLock(); defer s.mu.RUnlock(); return cloneTurns(s.history) }
-func (s *Session) SetPlan(steps []string) error {
-	s.cleanPlan(steps)
-	return nil
-}
-
 func (s *Session) cleanPlan(steps []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -376,6 +371,24 @@ func (s *Session) reserveSubAgentForContinue(id string) (PlanState, PlanStep, bo
 	snapshot := s.plan
 	snapshot.Steps = append([]PlanStep(nil), s.plan.Steps...)
 	return snapshot, step, planned, nil
+}
+
+// bindsCurrentStep reports whether job is the job the session's current plan
+// step is bound to. That is what separates "retry this step" from "add new work
+// to this worker session" when the planner sends more work to an existing job
+// (CHANGE-099). A completed step is excluded: its job was already accepted, so
+// more work for it is follow-on, not a retry.
+func (s *Session) bindsCurrentStep(job *subAgentJob) bool {
+	if s == nil || job == nil || !job.planned {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.plan.Current >= len(s.plan.Steps) {
+		return false
+	}
+	step := s.plan.Steps[s.plan.Current]
+	return s.plan.Revision == job.revision && step.Index == job.step.Index && step.Status != "completed"
 }
 
 func (s *Session) finishSubAgent(job *subAgentJob, status string) {

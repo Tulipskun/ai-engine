@@ -2,13 +2,9 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/Tulipskun/ai-engine/sdk"
@@ -47,95 +43,6 @@ func (m *ProviderManager) RefreshProvider(ctx context.Context, id sdk.ProviderID
 		return errors.New("runtime: provider manager is not initialized")
 	}
 	return m.rt.RefreshProvider(ctx, id)
-}
-
-func (m *ProviderManager) Adapters() []sdk.AdapterID {
-	return []sdk.AdapterID{sdk.AdapterOpenAI, sdk.AdapterAnthropic, sdk.AdapterGemini, sdk.AdapterOpenCode}
-}
-func (m *ProviderManager) Providers() []sdk.ProviderID {
-	if m == nil || m.rt == nil {
-		return nil
-	}
-	return append([]sdk.ProviderID(nil), m.rt.Providers...)
-}
-func (m *ProviderManager) KeyPools() map[sdk.ProviderID]*sdk.KeyPool {
-	if m == nil || m.rt == nil {
-		return nil
-	}
-	out := make(map[sdk.ProviderID]*sdk.KeyPool, len(m.rt.ProviderConfigs))
-	for _, config := range m.rt.ProviderConfigs {
-		out[config.ID] = config.Keys
-	}
-	return out
-}
-
-func (m *ProviderManager) Upsert(ctx context.Context, name, adapter, endpoint, apiKey string, freeOnly bool) error {
-	if m == nil || m.rt == nil || m.rt.Router == nil || m.rt.Client == nil {
-		return errors.New("runtime: provider manager is not initialized")
-	}
-	name = strings.TrimSpace(name)
-	adapter = strings.ToLower(strings.TrimSpace(adapter))
-	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	apiKey = strings.TrimSpace(apiKey)
-	if name == "" {
-		return errors.New("provider name is required")
-	}
-	if endpoint == "" {
-		return errors.New("provider URL is required")
-	}
-	if apiKey == "" {
-		return errors.New("provider API key is required")
-	}
-	if _, err := adapterForProvider(name, adapter); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	file := m.config
-	index := -1
-	for i := range file.Providers {
-		if strings.EqualFold(file.Providers[i].Name, name) {
-			index = i
-			break
-		}
-	}
-	entry := ProviderFile{Name: name, Adapter: adapter, HTTPEndpoint: endpoint, APIKeys: []string{apiKey}, FreeOnly: freeOnly}
-	if index >= 0 {
-		file.Providers[index] = entry
-	} else {
-		file.Providers = append(file.Providers, entry)
-	}
-	configs, err := file.ProviderConfigs()
-	if err != nil {
-		return err
-	}
-	var selected sdk.ProviderConfig
-	for _, config := range configs {
-		if string(config.ID) == name {
-			selected = config
-			break
-		}
-	}
-	if selected.ID == "" {
-		return fmt.Errorf("provider %q was not converted to an SDK config", name)
-	}
-	if err := m.persist(file); err != nil {
-		return err
-	}
-	if err := m.ensureAdapter(selected.ID, selected.Adapter); err != nil {
-		return err
-	}
-	m.rt.Router.RegisterProvider(selected)
-	m.rt.ProviderConfigs = configs
-	m.rt.Providers = providerIDs(configs)
-	m.config = file
-	if err := m.rt.RefreshProvider(ctx, selected.ID); err != nil {
-		return fmt.Errorf("provider %q saved but model discovery failed: %w", name, err)
-	}
-	return nil
 }
 
 // Reload re-reads provider.json from disk and re-registers every provider on
@@ -192,36 +99,6 @@ func (m *ProviderManager) ensureAdapter(provider sdk.ProviderID, id sdk.AdapterI
 		m.rt.Client.RegisterAdapter(provider, id, opencode.New(""))
 	default:
 		return fmt.Errorf("runtime: unsupported adapter %q", id)
-	}
-	return nil
-}
-func (m *ProviderManager) persist(config ProviderFileConfig) error {
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("runtime: encode provider config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
-		return fmt.Errorf("runtime: create provider config directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(m.path), ".provider-*.json")
-	if err != nil {
-		return fmt.Errorf("runtime: create provider config temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("runtime: chmod provider config temp file: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("runtime: write provider config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("runtime: close provider config temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, m.path); err != nil {
-		return fmt.Errorf("runtime: replace provider config: %w", err)
 	}
 	return nil
 }
