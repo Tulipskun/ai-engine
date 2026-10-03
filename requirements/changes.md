@@ -1368,3 +1368,15 @@ Reason: สอง provider ที่ใช้ wire format เดียวกั�
 Impact: sdk/router_client.go (AdapterBinding + lookup/refresh), runtime/runtime.go (newAdapter + per-provider register), runtime/provider_manager.go (ensureAdapter ต่อ provider), sdk/router_client_test.go + callers/tests ที่ใช้ RegisterAdapter (agent/loop/key_rotation/subagent/session_settings/agent_roles)
 Validation: `go test ./... -count=1`; `go vet ./...`; `go build -o bin/ai-engine ./cmd/ai-engine`; `bin/ai-engine --version` และบูต daemon จาก local copy ได้
 Status: accepted
+
+CHANGE-097
+
+Date: 2026-10-03
+Type: remove
+Request: ลบไฟล์ test ทั้งหมด มันไม่มีประสิทธิภาพ ทั้งใน repo gh และในเครื่อง แล้ว push
+Conflict: completion gate ใน `skills/project-specification-management/SKILL.md` และ `Validation:` ของหลาย CHANGE ที่อ้าง `go test ./...` — หลังลบจะรันเทสต์ตรวจงานไม่ได้อีก
+Previous: repository มี `*_test.go` 69 ไฟล์ ครอบคลุม sdk/runtime/tools/transport/cmd
+New: ลบ `*_test.go` ทั้งหมดออกจาก repository (local + remote); การตรวจงานเหลือ `go build ./...`, `go vet ./...` และการรัน `bin/ai-engine` จริง
+Reason: ผู้ใช้ตัดสินใจว่าไฟล์ test ไม่มีประสิทธิภาพ
+Impact: ไฟล์ `*_test.go` 69 ไฟล์ถูกลบ; `go test ./...` รายงาน no test files; กู้คืนได้ด้วย `git revert` ของ commit นี้
+Status: accepted
