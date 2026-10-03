@@ -143,6 +143,16 @@ func newSubAgentManager(agent *Agent, cfg SubAgentConfig) *subAgentManager {
 	return &subAgentManager{jobs: make(map[string]*subAgentJob), agent: agent, cfg: cfg}
 }
 
+// boundOf is the session's view of one delegated job: identity plus the plan and
+// step it was started under. The session stores that much and nothing more, so
+// delegation policy stays on this side of the boundary.
+func boundOf(job *subAgentJob) *BoundJob {
+	if job == nil {
+		return nil
+	}
+	return &BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}
+}
+
 // followUp is the one call for "send more work into this worker session". It
 // picks the reservation that matches what the caller means: when the named job
 // is the one bound to the current plan step, the new job retries that step and
@@ -164,7 +174,7 @@ func (m *subAgentManager) followUp(parent *Session, task, id string, input Input
 	if prev.status == "running" {
 		return "", errors.New("sdk: sub-agent job is still running: " + id)
 	}
-	if parent.bindsCurrentStep(prev) {
+	if parent.BindsCurrentStep(*boundOf(prev)) {
 		return m.start(parent, task, prev.id, input)
 	}
 	return m.startContinue(parent, task, prev.id, input)
@@ -213,7 +223,7 @@ func (m *subAgentManager) startLocked(parent *Session, task, previous string, in
 		}
 	}
 	id := fmt.Sprintf("sa-%d", time.Now().UnixNano())
-	plan, step, planned, err := parent.reserveSubAgent(id, retry)
+	plan, step, planned, err := parent.ReserveSubAgent(id, boundOf(retry))
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +369,7 @@ func (m *subAgentManager) run(job *subAgentJob) {
 	}
 	m.mu.Lock()
 	job.status, job.result, job.finished, job.cancel = status, result, time.Now(), nil
-	job.parent.finishSubAgent(job, status)
+	job.parent.FinishSubAgent(*boundOf(job), status)
 	job.reviewed = true
 	var final string
 	var report Input
@@ -746,7 +756,7 @@ func (m *subAgentManager) result(parent *Session, id, verification string) (stri
 		m.mu.Unlock()
 		return report, errors.New("sdk: wait for the final report delivered automatically, then provide verified success before acceptance; failed/incomplete work needs follow-up")
 	}
-	if err := parent.acceptSubAgent(job); err != nil {
+	if err := parent.AcceptSubAgent(*boundOf(job)); err != nil {
 		m.mu.Unlock()
 		return report, err
 	}
@@ -839,7 +849,7 @@ func (m *subAgentManager) Accept(parent *Session, id, verification string) error
 	if job.status != "completed" || !job.reviewed || job.accepted || job.superseded || strings.TrimSpace(verification) == "" {
 		return errors.New("sdk: wait for the final report delivered automatically, then provide verified success before acceptance; failed/incomplete work needs follow-up")
 	}
-	if err := parent.acceptSubAgent(job); err != nil {
+	if err := parent.AcceptSubAgent(*boundOf(job)); err != nil {
 		return err
 	}
 	job.accepted = true

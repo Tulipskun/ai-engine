@@ -146,9 +146,20 @@ func (s *Session) CurrentPlanStep() (PlanStep, bool) {
 	return s.plan.Steps[s.plan.Current], true
 }
 
+// BoundJob is what the session records about work delegated out of it: enough
+// to tell whether a later report still belongs to this plan and this step. The
+// session deliberately knows nothing else about the delegating machinery, so the
+// loop that delegates can change without touching storage.
+type BoundJob struct {
+	ID       string
+	Revision uint64
+	Planned  bool
+	Step     int
+}
+
 // reserveSubAgent binds a reservation to a snapshot under the plan lock. A
 // replacement plan does not clear activeJob: cancellation must finish first.
-func (s *Session) reserveSubAgent(id string, retry *subAgentJob) (PlanState, PlanStep, bool, error) {
+func (s *Session) ReserveSubAgent(id string, retry *BoundJob) (PlanState, PlanStep, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activeJob != "" {
@@ -160,7 +171,7 @@ func (s *Session) reserveSubAgent(id string, retry *subAgentJob) (PlanState, Pla
 		step = s.plan.Steps[s.plan.Current]
 	}
 	if retry != nil {
-		if retry.revision != s.plan.Revision || retry.planned != planned || (planned && retry.step.Index != step.Index) {
+		if retry.Revision != s.plan.Revision || retry.Planned != planned || (planned && retry.Step != step.Index) {
 			return PlanState{}, PlanStep{}, false, errors.New("sdk: stale sub-agent result belongs to another plan or step")
 		}
 	}
@@ -211,8 +222,8 @@ func (s *Session) reserveSubAgentForContinue(id string) (PlanState, PlanStep, bo
 // to this worker session" when the planner sends more work to an existing job
 // (CHANGE-099). A completed step is excluded: its job was already accepted, so
 // more work for it is follow-on, not a retry.
-func (s *Session) bindsCurrentStep(job *subAgentJob) bool {
-	if s == nil || job == nil || !job.planned {
+func (s *Session) BindsCurrentStep(job BoundJob) bool {
+	if s == nil || !job.Planned {
 		return false
 	}
 	s.mu.RLock()
@@ -221,13 +232,13 @@ func (s *Session) bindsCurrentStep(job *subAgentJob) bool {
 		return false
 	}
 	step := s.plan.Steps[s.plan.Current]
-	return s.plan.Revision == job.revision && step.Index == job.step.Index && step.Status != "completed"
+	return s.plan.Revision == job.Revision && step.Index == job.Step && step.Status != "completed"
 }
 
-func (s *Session) finishSubAgent(job *subAgentJob, status string) {
+func (s *Session) FinishSubAgent(job BoundJob, status string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.activeJob != job.id {
+	if s.activeJob != job.ID {
 		return
 	}
 	s.activeJob = ""
@@ -242,11 +253,11 @@ func (s *Session) finishSubAgent(job *subAgentJob, status string) {
 }
 
 // matchesJob requires s.mu. The revision protects even identically worded replacement plans.
-func (s *Session) matchesJob(job *subAgentJob) bool {
-	return job.planned && s.plan.Revision == job.revision && s.plan.Current < len(s.plan.Steps) && s.plan.Steps[s.plan.Current].Index == job.step.Index
+func (s *Session) matchesJob(job BoundJob) bool {
+	return job.Planned && s.plan.Revision == job.Revision && s.plan.Current < len(s.plan.Steps) && s.plan.Steps[s.plan.Current].Index == job.Step
 }
 
-func (s *Session) acceptSubAgent(job *subAgentJob) error {
+func (s *Session) AcceptSubAgent(job BoundJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activeJob != "" || !s.matchesJob(job) || s.plan.Steps[s.plan.Current].Status != "awaiting_review" {

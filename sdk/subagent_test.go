@@ -38,7 +38,7 @@ func (m *subAgentManager) finishForTest(job *subAgentJob, status string) {
 	m.mu.Lock()
 	job.status, job.reviewed, job.reportDelivered = status, true, true
 	m.mu.Unlock()
-	job.parent.finishSubAgent(job, status)
+	job.parent.FinishSubAgent(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}, status)
 }
 
 func TestReservationRejectsASecondRunningJob(t *testing.T) {
@@ -87,7 +87,7 @@ func TestFailedStepBindsItsJobForRetry(t *testing.T) {
 	}
 	// This predicate is what routes a follow-up to the retry branch, so a failed
 	// step has to bind its job: otherwise the step can never be retried.
-	if !parent.bindsCurrentStep(job) {
+	if !parent.BindsCurrentStep(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
 		t.Fatal("a failed step must bind its job so a follow-up retries that step")
 	}
 
@@ -122,7 +122,7 @@ func TestAcceptedStepDoesNotBindItsJob(t *testing.T) {
 
 	// After acceptance the plan moved on, so more work for that job is follow-on
 	// work attached to the new current step, not a retry of the finished one.
-	if parent.bindsCurrentStep(job) {
+	if parent.BindsCurrentStep(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
 		t.Fatal("an accepted step must not keep binding its job")
 	}
 	next, err := manager.startContinueLocked(parent, "new work", job.id, Input{})
