@@ -1380,3 +1380,17 @@ New: ลบ `*_test.go` ทั้งหมดออกจาก repository (loca
 Reason: ผู้ใช้ตัดสินใจว่าไฟล์ test ไม่มีประสิทธิภาพ
 Impact: ไฟล์ `*_test.go` 69 ไฟล์ถูกลบ; `go test ./...` รายงาน no test files; กู้คืนได้ด้วย `git revert` ของ commit นี้
 Status: accepted
+
+
+CHANGE-098
+
+Date: 2026-10-04
+Type: revise
+Request: ลบ tool `screen_control` และเปลี่ยนชื่อ orchestration tools เป็น `delegate_task`, `delegate_message`, `delegate_status`, `delegate_stop` และ `delegate_result`.
+Conflict: REQ-019 และ REQ-020 ใช้ชื่อ orchestration เดิม และ worker registry ยังมี `screen_control`.
+Previous: Main Agent ใช้ `delegate_to_subagent`, `follow_up_subagent`, `continue_subagent`, `stop_subagent` และ `accept_subagent_result`; worker registry มี `screen_control` สำหรับส่งงานไป JEV.
+New: Main Agent ใช้ชื่อ `delegate_*` ชุดเดียวสำหรับ lifecycle ของ delegated worker โดย `delegate_task` เริ่มงาน, `delegate_message` สั่งงานต่อใน worker session เดิมหลัง job เดิมจบ, `delegate_status` ดูสถานะ, `delegate_stop` หยุดแบบ blocking และ `delegate_result` อ่าน handoff report และรับ verified result ได้เมื่อส่ง verification evidence. Worker registry ไม่มี `screen_control` และไม่เชื่อมต่อ JEV อีกต่อไป.
+Reason: ให้ชื่อ tool สื่อว่าเป็นหมวดเดียวกันและแยก orchestration ออกจาก execution tools อย่างชัดเจน.
+Impact: sdk/subagent.go, sdk/plan_tool.go, tools/registry.go, index.md, requirements/functional.md, requirements/loop-control.md; ลบ tools/screen_control.go และปรับเอกสาร/ข้อกำหนด.
+Validation: `go build ./...`, `go vet ./...`, `git diff --check` และตรวจว่า Definitions ไม่มี `screen_control` หรือชื่อ orchestration เดิม.
+Status: accepted
