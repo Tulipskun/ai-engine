@@ -1,4 +1,4 @@
-package runtime
+package session
 
 import (
 	"container/list"
@@ -7,15 +7,13 @@ import (
 	"github.com/Tulipskun/ai-engine/provider"
 	"path/filepath"
 	"sync"
-
-	"github.com/Tulipskun/ai-engine/sdk"
 )
 
 const defaultMaxCachedSessions = 8
 
 type sessionCacheEntry struct {
 	id      string
-	session *sdk.Session
+	session *Session
 }
 type SessionManager struct {
 	// defaults supplies the provider and model a phone chose for a chat; it may
@@ -89,7 +87,7 @@ func (m *SessionManager) AdoptProviders(configs []provider.ProviderConfig, base 
 	}
 }
 
-func (m *SessionManager) repointUnknownProviderLocked(session *sdk.Session) error {
+func (m *SessionManager) repointUnknownProviderLocked(session *Session) error {
 	if session == nil || m.base.Provider == "" {
 		return nil
 	}
@@ -142,45 +140,94 @@ func (m *SessionManager) sessionDefaults(ctx context.Context, sessionID string) 
 	return lookup(ctx, sessionID)
 }
 
-func (m *SessionManager) Resolve(ctx context.Context, input sdk.Input) (*sdk.Session, error) {
+// Resolve answers the one question this package exists for: which session does
+// this id belong to. Every conversation goes through here — a phone's chat and a
+// worker's own session alike — so identity, key assignment, provider repointing
+// and eviction behave identically for both.
+func (m *SessionManager) Resolve(ctx context.Context, id string) (*Session, error) {
 	if m == nil {
-		return nil, errors.New("runtime: session manager is nil")
+		return nil, errors.New("session: manager is nil")
+	}
+	if id == "" {
+		return nil, errors.New("session: id is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if input.SessionID == "" {
-		return nil, errors.New("runtime: input SessionID is required")
-	}
 	m.mu.Lock()
-	if elem, ok := m.sessions[input.SessionID]; ok {
+	if elem, ok := m.sessions[id]; ok {
 		m.lru.MoveToFront(elem)
 		session := elem.Value.(*sessionCacheEntry).session
 		m.mu.Unlock()
 		return session, nil
 	}
+	m.mu.Unlock()
+	return m.open(ctx, id, nil)
+}
+
+// ResolveWorker returns the session a delegated worker runs in. It is the same
+// path as Resolve — same table, same eviction, same key rules — with the
+// caller's overrides applied to a session that does not exist yet. A worker that
+// already has a session (a follow-up or continued job) keeps the stored one, so
+// its history survives; only a first delegation takes the overrides.
+//
+// This used to be a direct OpenSession call inside the delegation code, which
+// meant a worker bypassed key assignment, provider repointing and eviction
+// entirely, and re-opened its database on every follow-up.
+func (m *SessionManager) ResolveWorker(ctx context.Context, id string, firstTime func(*provider.SessionConfig)) (*Session, error) {
+	if m == nil {
+		return nil, errors.New("session: manager is nil")
+	}
+	if id == "" {
+		return nil, errors.New("session: id is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if elem, ok := m.sessions[id]; ok {
+		m.lru.MoveToFront(elem)
+		session := elem.Value.(*sessionCacheEntry).session
+		m.mu.Unlock()
+		return session, nil
+	}
+	m.mu.Unlock()
+	return m.open(ctx, id, firstTime)
+}
+
+// open loads or creates the session for id and puts it in the table. When
+// firstTime is set it shapes a session that is about to be created; an existing
+// database is never overwritten by it.
+func (m *SessionManager) open(ctx context.Context, id string, firstTime func(*provider.SessionConfig)) (*Session, error) {
+	m.mu.Lock()
 	config := m.base
-	config.ID = input.SessionID
+	config.ID = id
 	keys := m.keys
 	if providerKeys := m.providerKeys[config.Provider]; providerKeys != nil {
 		keys = providerKeys
 	}
 	m.mu.Unlock()
+	if firstTime != nil {
+		firstTime(&config)
+		if providerKeys := m.keysFor(config.Provider); providerKeys != nil {
+			keys = providerKeys
+		}
+	}
 
-	path := sdk.SessionDBPath(m.dir, input.SessionID)
-	session, err := sdk.OpenSession(path, config, keys)
+	path := SessionDBPath(m.dir, id)
+	session, err := OpenSession(path, config, keys)
 	if err != nil {
 		return nil, err
 	}
 	// What the phone picked last time wins over the boot default, and only when
 	// the daemon can still route to it.
 	applied := false
-	if providerLocal, model, ok := m.sessionDefaults(ctx, input.SessionID); ok && providerLocal != "" && model != "" {
+	if id, model, ok := m.sessionDefaults(ctx, id); ok && id != "" && model != "" {
 		m.mu.RLock()
-		providerKeys := m.providerKeys[providerLocal]
+		providerKeys := m.providerKeys[id]
 		m.mu.RUnlock()
 		if providerKeys != nil {
-			if err := session.SetProvider(providerLocal, providerKeys); err == nil {
+			if err := session.SetProvider(id, providerKeys); err == nil {
 				if err := session.SetModel(model); err == nil {
 					applied = true
 				}
@@ -203,20 +250,28 @@ func (m *SessionManager) Resolve(ctx context.Context, input sdk.Input) (*sdk.Ses
 			return nil, err
 		}
 	}
-	// Another goroutine may have opened the same chat while this one waited
+	// Another goroutine may have opened the same session while this one waited
 	// outside the lock: keep one session object per id.
-	if elem, ok := m.sessions[input.SessionID]; ok {
+	if elem, ok := m.sessions[id]; ok {
 		existing := elem.Value.(*sessionCacheEntry).session
 		m.mu.Unlock()
 		_ = session.Close()
 		return existing, nil
 	}
-	elem := m.lru.PushFront(&sessionCacheEntry{id: input.SessionID, session: session})
-	m.sessions[input.SessionID] = elem
+	elem := m.lru.PushFront(&sessionCacheEntry{id: id, session: session})
+	m.sessions[id] = elem
 	m.evictLocked()
 	m.mu.Unlock()
 	return session, nil
 }
+
+// keysFor is the pool the manager holds for a provider, if any.
+func (m *SessionManager) keysFor(id provider.ProviderID) *provider.KeyPool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.providerKeys[id]
+}
+
 func (m *SessionManager) evictLocked() {
 	limit := m.maxCached
 	if limit <= 0 {
@@ -232,11 +287,11 @@ func (m *SessionManager) evictLocked() {
 		m.lru.Remove(elem)
 	}
 }
-func (m *SessionManager) ListSessions(limit int) ([]sdk.SessionInfo, error) {
+func (m *SessionManager) ListSessions(limit int) ([]SessionInfo, error) {
 	if m == nil {
-		return nil, errors.New("runtime: session manager is nil")
+		return nil, errors.New("session: manager is nil")
 	}
-	return sdk.ListSessionsInDir(m.dir, limit)
+	return ListSessionsInDir(m.dir, limit)
 }
 
 // Forget drops one live chat from the in-memory cache and closes it, so the
@@ -255,9 +310,9 @@ func (m *SessionManager) ApplyGeneration(
 	clearKnobs []string,
 ) (string, error) {
 	if m == nil {
-		return "", errors.New("runtime: session manager is nil")
+		return "", errors.New("session: manager is nil")
 	}
-	session, err := m.Resolve(ctx, sdk.Input{SessionID: sessionID})
+	session, err := m.Resolve(ctx, sessionID)
 	if err != nil {
 		return "", err
 	}
@@ -279,7 +334,7 @@ func (m *SessionManager) ApplyGeneration(
 		if err := session.SetMaxOutputTokens(0); err != nil {
 			return "", err
 		}
-		return sdk.SessionDBPath(m.dir, sessionID), nil
+		return SessionDBPath(m.dir, sessionID), nil
 	}
 	// A knob that was not sent keeps whatever the chat already had; only a name
 	// in cleared is removed. Replacing the whole set would mean that asking for a
@@ -334,16 +389,16 @@ func (m *SessionManager) ApplyGeneration(
 			}
 		}
 	}
-	return sdk.SessionDBPath(m.dir, sessionID), nil
+	return SessionDBPath(m.dir, sessionID), nil
 }
 
 // SessionGeneration reads back what one chat runs on, so the phone can be told
 // what it is editing rather than guessing from what it last sent.
 func (m *SessionManager) SessionGeneration(ctx context.Context, sessionID string) (provider.GenerationSettings, bool, error) {
 	if m == nil {
-		return provider.GenerationSettings{}, false, errors.New("runtime: session manager is nil")
+		return provider.GenerationSettings{}, false, errors.New("session: manager is nil")
 	}
-	session, err := m.Resolve(ctx, sdk.Input{SessionID: sessionID})
+	session, err := m.Resolve(ctx, sessionID)
 	if err != nil {
 		return provider.GenerationSettings{}, false, err
 	}

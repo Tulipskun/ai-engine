@@ -13,9 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/runtime/d1store"
-	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/session"
 	mobiletransport "github.com/Tulipskun/ai-engine/transport/mobile"
 )
 
@@ -41,7 +40,7 @@ type mobileRuntime struct {
 	applySystemRoutes func()
 
 	// sessions applies a phone's provider/model choice to a live chat.
-	sessions *runtime.SessionManager
+	sessions *session.SessionManager
 }
 
 type runtimeMobileConfig struct {
@@ -145,7 +144,7 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 type modelStore struct {
 	router   *provider.Router
 	client   *d1store.Client
-	sessions *runtime.SessionManager
+	sessions *session.SessionManager
 	// workingModel is the admin store's verified model per provider, so the
 	// phone's pickers default to a model that is known to answer.
 	workingModel func(provider.ProviderID) string
@@ -273,7 +272,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		return mobiletransport.SessionRow{}, err
 	}
 	if m.sessions != nil {
-		session, err := m.sessions.Resolve(ctx, sdk.Input{SessionID: sessionID})
+		session, err := m.sessions.Resolve(ctx, sessionID)
 		if err != nil {
 			log.Printf("mobile: apply model choice to open session %s: %v", sessionID, err)
 		} else {
@@ -486,7 +485,7 @@ func hasModel(router *provider.Router, providerLocal provider.ProviderID, model 
 	return false
 }
 
-func applySessionModel(session *sdk.Session, providerLocal provider.ProviderID, model string, keys *provider.KeyPool) {
+func applySessionModel(session *session.Session, providerLocal provider.ProviderID, model string, keys *provider.KeyPool) {
 	if err := session.SetProvider(providerLocal, keys); err != nil {
 		log.Printf("mobile: set provider %s on %s: %v", providerLocal, session.ID(), err)
 		return
@@ -652,7 +651,7 @@ func (m *mobileRuntime) PushState(ctx context.Context) {
 	}
 }
 
-// sessionDBName mirrors sdk.SessionDBPath naming for the sync layer.
+// sessionDBName mirrors session.SessionDBPath naming for the sync layer.
 func sessionDBName(sessionID string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(sessionID)) + ".db"
 }

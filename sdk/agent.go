@@ -5,11 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/session"
 	"sync"
 	"time"
 )
 
 var ErrAgentRetriesExhausted = errors.New("sdk: agent retries exhausted")
+
+// SessionResolver is how the loop reaches the session layer. It is declared here
+// because the loop is the consumer: it needs "give me the session for this id"
+// and nothing about how one is stored.
+type SessionResolver interface {
+	Resolve(ctx context.Context, id string) (*session.Session, error)
+	ResolveWorker(ctx context.Context, id string, firstTime func(*provider.SessionConfig)) (*session.Session, error)
+}
 
 type ToolExecutor interface {
 	Definitions() []provider.Tool
@@ -17,7 +26,11 @@ type ToolExecutor interface {
 }
 
 type Agent struct {
-	Client          *provider.RouterClient
+	Client *provider.RouterClient
+	// Sessions resolves every conversation, the phone's chats and the workers
+	// this agent delegates to alike. Delegation used to open its own database,
+	// which skipped key assignment, provider repointing and eviction.
+	Sessions        SessionResolver
 	Tools           ToolExecutor
 	MaxRetries      int
 	DisablePlanning bool
@@ -48,16 +61,16 @@ func (a *Agent) subAgentManager() *subAgentManager {
 	return a.subAgents
 }
 
-func (a *Agent) RunTurn(ctx context.Context, session *Session, user provider.Turn, req provider.Request) (provider.Response, error) {
-	return a.runTurn(ctx, session, user, req, nil, nil)
+func (a *Agent) RunTurn(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request) (provider.Response, error) {
+	return a.runTurn(ctx, sessionLocal, user, req, nil, nil)
 }
 
-func (a *Agent) RunTurnWithTrace(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc) (provider.Response, error) {
-	return a.runTurn(ctx, session, user, req, trace, nil)
+func (a *Agent) RunTurnWithTrace(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace TraceFunc) (provider.Response, error) {
+	return a.runTurn(ctx, sessionLocal, user, req, trace, nil)
 }
 
-func (a *Agent) RunTurnWithTraceAndEntry(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc, entry func(context.Context, Input) error) (provider.Response, error) {
-	return a.runTurn(ctx, session, user, req, trace, entry)
+func (a *Agent) RunTurnWithTraceAndEntry(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace TraceFunc, entry func(context.Context, Input) error) (provider.Response, error) {
+	return a.runTurn(ctx, sessionLocal, user, req, trace, entry)
 }
 
 func (a *Agent) Interrupt(sessionID string) bool {
@@ -120,11 +133,11 @@ func (a *Agent) beginInterrupt(ctx context.Context, sessionID string) (context.C
 	}
 }
 
-func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc, entry func(context.Context, Input) error) (provider.Response, error) {
-	if a == nil || a.Client == nil || session == nil {
+func (a *Agent) runTurn(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace TraceFunc, entry func(context.Context, Input) error) (provider.Response, error) {
+	if a == nil || a.Client == nil || sessionLocal == nil {
 		return provider.Response{}, errors.New("sdk: incomplete agent configuration")
 	}
-	ctx, cleanup := a.beginInterrupt(ctx, session.ID())
+	ctx, cleanup := a.beginInterrupt(ctx, sessionLocal.ID())
 	defer cleanup()
 	clock := &turnClock{}
 	if trace != nil {
@@ -132,7 +145,7 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Tur
 		trace = func(ctx context.Context, event TraceEvent) { inner(ctx, clock.stamp(event)) }
 	}
 
-	before := session.History()
+	before := sessionLocal.History()
 	retries := a.MaxRetries
 	if retries < 0 {
 		retries = 0
@@ -147,20 +160,20 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Tur
 	// behaviour is unchanged for one.
 	triedKeys := 0
 	for attempt := 0; attempt <= retries; attempt++ {
-		session.ReplaceHistory(before)
-		resp, err := a.runAttempt(ctx, session, user, req, trace, &backoff, entry, clock)
+		sessionLocal.ReplaceHistory(before)
+		resp, err := a.runAttempt(ctx, sessionLocal, user, req, trace, &backoff, entry, clock)
 		if err == nil {
 			return resp, nil
 		}
 		lastErr = err
-		if a.wasInterrupted(session.ID()) {
-			settleInterruptedTurn(session, before)
+		if a.wasInterrupted(sessionLocal.ID()) {
+			settleInterruptedTurn(sessionLocal, before)
 			break
 		}
 		if retryAfterAbort(err) {
 			break
 		}
-		session.ReplaceHistory(before)
+		sessionLocal.ReplaceHistory(before)
 		// A rejected key is the one failure worth a different attempt rather than
 		// a repeat: the pool may hold a working key, and asking again with the same
 		// key gets the same answer. Move to the next one and try it immediately,
@@ -168,7 +181,7 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Tur
 		// once and then the turn fails for real (CHANGE-077).
 		if isKeyRejection(err) {
 			triedKeys++
-			if rotateToNextKey(session, triedKeys) {
+			if rotateToNextKey(sessionLocal, triedKeys) {
 				traceEvent(ctx, trace, newTraceEvent(TraceRetryWait, withErr(err)))
 				continue
 			}
@@ -180,8 +193,8 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Tur
 		delay := backoff.Delay(err)
 		traceEvent(ctx, trace, newTraceEvent(TraceRetryWait, withErr(err), withRetryAfter(delay)))
 		if err := waitRetry(ctx, delay); err != nil {
-			if a.wasInterrupted(session.ID()) {
-				settleInterruptedTurn(session, before)
+			if a.wasInterrupted(sessionLocal.ID()) {
+				settleInterruptedTurn(sessionLocal, before)
 			}
 			traceEvent(ctx, trace, newTraceEvent(TraceError, withErr(err)))
 			return provider.Response{}, err
@@ -199,29 +212,29 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Tur
 // Agent planner. A session in sub mode answers as a worker with the full
 // execution tool set, independent of the global DisablePlanning switch, so
 // one channel can run direct while others keep planning (REQ-029).
-func (a *Agent) planningFor(session *Session) bool {
+func (a *Agent) planningFor(sessionLocal *session.Session) bool {
 	if a != nil && a.DisablePlanning {
 		return false
 	}
-	if session == nil {
+	if sessionLocal == nil {
 		return true
 	}
-	return session.Config().AgentMode != provider.AgentModeSub
+	return sessionLocal.Config().AgentMode != provider.AgentModeSub
 }
 
-func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error, clock *turnClock) (provider.Response, error) {
+func (a *Agent) runAttempt(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error, clock *turnClock) (provider.Response, error) {
 	var executor ToolExecutor
-	if a.planningFor(session) {
-		executor = newPlanningToolExecutor(a.Tools, session)
+	if a.planningFor(sessionLocal) {
+		executor = newPlanningToolExecutor(a.Tools, sessionLocal)
 	} else {
 		executor = a.Tools
 	}
 	if planner, ok := executor.(*planningToolExecutor); ok && a.SubAgentConfig.Enabled {
-		planner.ConfigureSubAgent(&subAgentRunner{manager: a.subAgentManager(), parent: session})
+		planner.ConfigureSubAgent(&subAgentRunner{manager: a.subAgentManager(), parent: sessionLocal})
 	}
-	session.Append(user)
+	sessionLocal.Append(user)
 	if req.Stream {
-		return a.runStreamAttempt(ctx, session, req, trace, backoff, entry)
+		return a.runStreamAttempt(ctx, sessionLocal, req, trace, backoff, entry)
 	}
 	baseSystemPrompt := req.SystemPrompt
 
@@ -232,10 +245,10 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.
 		if err := ctx.Err(); err != nil {
 			return provider.Response{}, err
 		}
-		req.Messages = buildContextWindow(session.History(), defaultContextWindowTokens)
+		req.Messages = buildContextWindow(sessionLocal.History(), defaultContextWindowTokens)
 		req.SystemPrompt = baseSystemPrompt
-		if a.planningFor(session) {
-			req.SystemPrompt = planningSystemPrompt(baseSystemPrompt, session.Plan())
+		if a.planningFor(sessionLocal) {
+			req.SystemPrompt = planningSystemPrompt(baseSystemPrompt, sessionLocal.Plan())
 		}
 		if executor != nil {
 			req.Tools = executor.Definitions()
@@ -245,7 +258,7 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.
 		clock.begin()
 		traceEvent(ctx, trace, newTraceEvent(TraceRequest))
 
-		resp, err := a.Client.Generate(ctx, session, req)
+		resp, err := a.Client.Generate(ctx, sessionLocal, req)
 		if err != nil {
 			return provider.Response{}, err
 		}
@@ -257,7 +270,7 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.
 		if backoff != nil {
 			backoff.Reset()
 		}
-		commitResponse(session, resp)
+		session.CommitResponse(sessionLocal, resp)
 
 		if len(resp.Content) > 0 {
 			traceEvent(ctx, trace, newTraceEvent(TraceResponseContent, withResponse(resp)))
@@ -281,12 +294,12 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.
 				result := provider.ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
 				traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
 				if entry != nil {
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: cloneToolResult(result)}}); err != nil {
+					if err := entry(ctx, Input{Source: "tool", SessionID: sessionLocal.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: cloneToolResult(result)}}); err != nil {
 						return provider.Response{}, err
 					}
 				} else {
 					resultCopy := result
-					session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
+					sessionLocal.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 				}
 			}
 			continue
@@ -314,30 +327,30 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.
 			traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
 			resultCopy := result
 			if entry != nil {
-				if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
+				if err := entry(ctx, Input{Source: "tool", SessionID: sessionLocal.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
 					return provider.Response{}, err
 				}
 			} else {
-				session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
+				sessionLocal.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 			}
 		}
 	}
 }
 
-func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req provider.Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error) (provider.Response, error) {
+func (a *Agent) runStreamAttempt(ctx context.Context, sessionLocal *session.Session, req provider.Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error) (provider.Response, error) {
 	clock := &turnClock{}
 	if trace != nil {
 		inner := trace
 		trace = func(ctx context.Context, event TraceEvent) { inner(ctx, clock.stamp(event)) }
 	}
 	var executor ToolExecutor
-	if a.planningFor(session) {
-		executor = newPlanningToolExecutor(a.Tools, session)
+	if a.planningFor(sessionLocal) {
+		executor = newPlanningToolExecutor(a.Tools, sessionLocal)
 	} else {
 		executor = a.Tools
 	}
 	if planner, ok := executor.(*planningToolExecutor); ok && a.SubAgentConfig.Enabled {
-		planner.ConfigureSubAgent(&subAgentRunner{manager: a.subAgentManager(), parent: session})
+		planner.ConfigureSubAgent(&subAgentRunner{manager: a.subAgentManager(), parent: sessionLocal})
 	}
 	baseSystemPrompt := req.SystemPrompt
 	// REQ-045: hard loop-control caps for this attempt (same as runAttempt).
@@ -346,10 +359,10 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req prov
 		if err := ctx.Err(); err != nil {
 			return provider.Response{}, err
 		}
-		req.Messages = buildContextWindow(session.History(), defaultContextWindowTokens)
+		req.Messages = buildContextWindow(sessionLocal.History(), defaultContextWindowTokens)
 		req.SystemPrompt = baseSystemPrompt
-		if a.planningFor(session) {
-			req.SystemPrompt = planningSystemPrompt(baseSystemPrompt, session.Plan())
+		if a.planningFor(sessionLocal) {
+			req.SystemPrompt = planningSystemPrompt(baseSystemPrompt, sessionLocal.Plan())
 		}
 		if executor != nil {
 			req.Tools = executor.Definitions()
@@ -359,7 +372,7 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req prov
 		clock.begin()
 		traceEvent(ctx, trace, newTraceEvent(TraceRequest))
 
-		events, err := a.Client.Stream(ctx, session, req)
+		events, err := a.Client.Stream(ctx, sessionLocal, req)
 		if err != nil {
 			return provider.Response{}, err
 		}
@@ -413,10 +426,10 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req prov
 			return provider.Response{}, streamErr
 		}
 		if resp.Provider == "" {
-			resp.Provider = string(session.Config().Provider)
+			resp.Provider = string(sessionLocal.Config().Provider)
 		}
 		if resp.Model == "" {
-			resp.Model = session.Config().Model
+			resp.Model = sessionLocal.Config().Model
 		}
 		if len(resp.Content) == 0 {
 			resp.Content = text
@@ -436,7 +449,7 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req prov
 			backoff.Reset()
 		}
 
-		commitResponse(session, resp)
+		session.CommitResponse(sessionLocal, resp)
 		if len(resp.ToolCalls) == 0 {
 			traceEvent(ctx, trace, TraceEvent{Stage: TraceResponse, Response: cloneResponseContent(resp)})
 			return resp, nil
@@ -452,11 +465,11 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req prov
 				traceEvent(ctx, trace, TraceEvent{Stage: TraceToolResult, ToolCall: callCopy, ToolResult: cloneToolResult(result)})
 				resultCopy := result
 				if entry != nil {
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
+					if err := entry(ctx, Input{Source: "tool", SessionID: sessionLocal.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
 						return provider.Response{}, err
 					}
 				} else {
-					session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
+					sessionLocal.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 				}
 			}
 			continue
@@ -483,21 +496,21 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req prov
 			traceEvent(ctx, trace, TraceEvent{Stage: TraceToolResult, ToolCall: callCopy, ToolResult: cloneToolResult(result)})
 			resultCopy := result
 			if entry != nil {
-				if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
+				if err := entry(ctx, Input{Source: "tool", SessionID: sessionLocal.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
 					return provider.Response{}, err
 				}
 			} else {
-				session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
+				sessionLocal.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 			}
 		}
 	}
 }
 
-func settleInterruptedTurn(session *Session, before []provider.Turn) {
-	if session == nil {
+func settleInterruptedTurn(sessionLocal *session.Session, before []provider.Turn) {
+	if sessionLocal == nil {
 		return
 	}
-	history := session.History()
+	history := sessionLocal.History()
 	start := len(before)
 	if start > len(history) {
 		start = len(history)
@@ -523,7 +536,7 @@ func settleInterruptedTurn(session *Session, before []provider.Turn) {
 		if name == "" {
 			name = "tool"
 		}
-		session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &provider.ToolResult{ID: id, Content: "tool `" + name + "` was interrupted by the user; it may have partially run, not run at all, or already finished - verify the actual state before retrying.", IsError: true}})
+		sessionLocal.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &provider.ToolResult{ID: id, Content: "tool `" + name + "` was interrupted by the user; it may have partially run, not run at all, or already finished - verify the actual state before retrying.", IsError: true}})
 	}
 }
 
@@ -650,12 +663,12 @@ func isKeyRejection(err error) bool {
 // rotateToNextKey moves the session onto the next key in its pool, and reports
 // whether there was one left to try. tried counts the keys already presented, so
 // each key is used once and the turn then fails for real.
-func rotateToNextKey(session *Session, tried int) bool {
-	pool := session.keyPoolSize()
+func rotateToNextKey(sessionLocal *session.Session, tried int) bool {
+	pool := sessionLocal.KeyPoolSize()
 	if pool <= 1 || tried >= pool {
 		return false
 	}
-	if _, err := session.RotateAPIKey(); err != nil {
+	if _, err := sessionLocal.RotateAPIKey(); err != nil {
 		return false
 	}
 	return true

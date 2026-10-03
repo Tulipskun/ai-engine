@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/runtime"
+	"github.com/Tulipskun/ai-engine/session"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/sdk"
 	"github.com/Tulipskun/ai-engine/tools"
 )
@@ -22,7 +23,7 @@ import (
 
 // newAgentWithWorkspaces builds the Agent with its worker tool registry and the
 // per-session workspace lookup, then applies the stored sub-agent defaults.
-func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg runtime.SystemConfig, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
+func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg runtime.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*sdk.Agent, error) {
 	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
@@ -30,7 +31,7 @@ func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state stri
 	if workspaceFor != nil {
 		registry.SetWorkspaceResolver(workspaceFor)
 	}
-	agent := &sdk.Agent{Client: client, Tools: registry}
+	agent := &sdk.Agent{Client: client, Tools: registry, Sessions: sessions}
 	agent.SubAgentConfig = sdk.SubAgentConfig{
 		Enabled:              cfg.SubAgent.Enabled,
 		Provider:             cfg.SubAgent.Provider,

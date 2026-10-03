@@ -1,6 +1,9 @@
 package sdk
 
-import "github.com/Tulipskun/ai-engine/provider"
+import (
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/session"
+)
 
 const defaultContextWindowTokens = 58000
 
@@ -23,7 +26,7 @@ func buildContextWindow(history []provider.Turn, maxTokens int) []provider.Turn 
 			groups = append(groups, current)
 			current = make([]provider.Turn, 0, 4)
 		}
-		current = append(current, cloneTurn(turn))
+		current = append(current, session.CloneTurn(turn))
 	}
 	if len(current) > 0 {
 		groups = append(groups, current)

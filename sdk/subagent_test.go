@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/session"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,9 +13,9 @@ import (
 // The reservation layer is exercised directly so the tests stay deterministic
 // and never start a provider call.
 
-func newTestSession(t *testing.T, id string) *Session {
+func newTestSession(t *testing.T, id string) *session.Session {
 	t.Helper()
-	session, err := OpenSession(
+	sessionLocal, err := session.OpenSession(
 		filepath.Join(t.TempDir(), "session.db"),
 		provider.SessionConfig{ID: id, Provider: "test-provider", Model: "test-model"},
 		provider.NewKeyPool("test-key"),
@@ -22,8 +23,8 @@ func newTestSession(t *testing.T, id string) *Session {
 	if err != nil {
 		t.Fatalf("open session %s: %v", id, err)
 	}
-	t.Cleanup(func() { _ = session.Close() })
-	return session
+	t.Cleanup(func() { _ = sessionLocal.Close() })
+	return sessionLocal
 }
 
 func newTestManager() *subAgentManager {
@@ -38,12 +39,12 @@ func (m *subAgentManager) finishForTest(job *subAgentJob, status string) {
 	m.mu.Lock()
 	job.status, job.reviewed, job.reportDelivered = status, true, true
 	m.mu.Unlock()
-	job.parent.FinishSubAgent(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}, status)
+	job.parent.FinishSubAgent(session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}, status)
 }
 
 func TestReservationRejectsASecondRunningJob(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"first", "second"})
+	parent.CleanPlan([]string{"first", "second"})
 	manager := newTestManager()
 
 	first, err := manager.startLocked(parent, "task one", "", Input{})
@@ -73,7 +74,7 @@ func TestReservationRejectsASecondRunningJob(t *testing.T) {
 
 func TestFailedStepBindsItsJobForRetry(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"only step"})
+	parent.CleanPlan([]string{"only step"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(parent, "do the thing", "", Input{})
@@ -87,7 +88,7 @@ func TestFailedStepBindsItsJobForRetry(t *testing.T) {
 	}
 	// This predicate is what routes a follow-up to the retry branch, so a failed
 	// step has to bind its job: otherwise the step can never be retried.
-	if !parent.BindsCurrentStep(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
+	if !parent.BindsCurrentStep(session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
 		t.Fatal("a failed step must bind its job so a follow-up retries that step")
 	}
 
@@ -108,7 +109,7 @@ func TestFailedStepBindsItsJobForRetry(t *testing.T) {
 
 func TestAcceptedStepDoesNotBindItsJob(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"first", "second"})
+	parent.CleanPlan([]string{"first", "second"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(parent, "task", "", Input{})
@@ -122,7 +123,7 @@ func TestAcceptedStepDoesNotBindItsJob(t *testing.T) {
 
 	// After acceptance the plan moved on, so more work for that job is follow-on
 	// work attached to the new current step, not a retry of the finished one.
-	if parent.BindsCurrentStep(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
+	if parent.BindsCurrentStep(session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
 		t.Fatal("an accepted step must not keep binding its job")
 	}
 	next, err := manager.startContinueLocked(parent, "new work", job.id, Input{})
@@ -142,7 +143,7 @@ func TestAcceptedStepDoesNotBindItsJob(t *testing.T) {
 
 func TestAcceptRequiresVerifiedEvidence(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"only step"})
+	parent.CleanPlan([]string{"only step"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(parent, "task", "", Input{})
@@ -161,7 +162,7 @@ func TestAcceptRequiresVerifiedEvidence(t *testing.T) {
 
 func TestFailedWorkCannotBeAccepted(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"only step"})
+	parent.CleanPlan([]string{"only step"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(parent, "task", "", Input{})
@@ -177,7 +178,7 @@ func TestFailedWorkCannotBeAccepted(t *testing.T) {
 
 func TestReplacementPlanInvalidatesAnInFlightJob(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"first"})
+	parent.CleanPlan([]string{"first"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(parent, "task", "", Input{})
@@ -188,7 +189,7 @@ func TestReplacementPlanInvalidatesAnInFlightJob(t *testing.T) {
 
 	// The planner rewrites the plan with identical wording. The revision counter is
 	// what stops the old job's result being accepted against the new plan.
-	parent.cleanPlan([]string{"first"})
+	parent.CleanPlan([]string{"first"})
 	if _, err := manager.startLocked(parent, "retry", job.id, Input{}); err == nil {
 		t.Fatal("a job from a replaced plan must not be retryable against the new one")
 	}
@@ -197,7 +198,7 @@ func TestReplacementPlanInvalidatesAnInFlightJob(t *testing.T) {
 func TestJobsAreScopedToTheirOwnParent(t *testing.T) {
 	first := newTestSession(t, "first")
 	second := newTestSession(t, "second")
-	first.cleanPlan([]string{"step"})
+	first.CleanPlan([]string{"step"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(first, "task", "", Input{})
@@ -216,7 +217,7 @@ func TestJobsAreScopedToTheirOwnParent(t *testing.T) {
 
 func TestHandoffReportNamesTheToolsTheWorkerUsed(t *testing.T) {
 	parent := newTestSession(t, "parent")
-	parent.cleanPlan([]string{"step"})
+	parent.CleanPlan([]string{"step"})
 	manager := newTestManager()
 
 	job, err := manager.startLocked(parent, "task", "", Input{})

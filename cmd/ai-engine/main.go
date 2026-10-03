@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/runtime"
 	"log"
 	"os"
 	"os/signal"
@@ -13,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/session"
 	"github.com/Tulipskun/ai-engine/transport"
 )
 
@@ -126,7 +127,7 @@ func run(ctx context.Context) error {
 	if maxOutputTokens > 0 {
 		baseSession.MaxOutputTokens = maxOutputTokens
 	}
-	sessions := runtime.NewSessionManagerWithProviders(sessionDB, baseSession, rt.ProviderConfigs)
+	sessions := session.NewSessionManagerWithProviders(sessionDB, baseSession, rt.ProviderConfigs)
 	defer sessions.Close()
 	providerManager := runtime.NewProviderManager(providerConfigPath, rt, providerFile)
 	inputConfigPath := filepath.Join(state, transport.DefaultConfigPath)
@@ -142,8 +143,8 @@ func run(ctx context.Context) error {
 		return err
 	}
 	agent, err := newAgentWithWorkspaces(rt.Client, workspace, state, systemConfig, func(ctx context.Context) string {
-		return sessions.WorkspaceFor(sdk.SessionIDFromContext(ctx))
-	})
+		return sessions.WorkspaceFor(session.SessionIDFromContext(ctx))
+	}, sessions)
 	if err != nil {
 		return err
 	}
@@ -225,7 +226,9 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	loop = &sdk.HarnessLoop{Agent: agent, Source: sdk.ChannelInputSource{Inputs: inputs}, ResolveSession: sessions.Resolve, BuildRequest: func(context.Context, sdk.Input, *sdk.Session) (provider.Request, error) {
+	loop = &sdk.HarnessLoop{Agent: agent, Source: sdk.ChannelInputSource{Inputs: inputs}, ResolveSession: func(_ context.Context, in sdk.Input) (*session.Session, error) {
+		return sessions.Resolve(context.Background(), in.SessionID)
+	}, BuildRequest: func(context.Context, sdk.Input, *session.Session) (provider.Request, error) {
 		// Stream every turn: the phone renders deltas as they arrive, and a
 		// provider that cannot stream still answers through the same path.
 		return provider.Request{

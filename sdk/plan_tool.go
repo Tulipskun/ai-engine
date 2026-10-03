@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/session"
 	"strings"
 )
 
@@ -30,11 +31,11 @@ type planningToolInput struct {
 type planningToolExecutor struct {
 	base     ToolExecutor
 	subAgent SubAgentRunner
-	session  *Session
+	chat     *session.Session
 }
 
-func newPlanningToolExecutor(base ToolExecutor, session *Session) *planningToolExecutor {
-	return &planningToolExecutor{base: base, session: session}
+func newPlanningToolExecutor(base ToolExecutor, chat *session.Session) *planningToolExecutor {
+	return &planningToolExecutor{base: base, chat: chat}
 }
 
 func (e *planningToolExecutor) ConfigureSubAgent(runner SubAgentRunner) {
@@ -67,7 +68,7 @@ func (e *planningToolExecutor) Definitions() []provider.Tool {
 	return defs
 }
 
-func planningSystemPrompt(base string, plan PlanState) string {
+func planningSystemPrompt(base string, plan session.PlanState) string {
 	// Keep repository requirements and custom context intact. The appended role
 	// boundary and executor allowlist supersede conflicting execution guidance.
 	// The checklist rides every request so the planner always sees the whole
@@ -83,7 +84,7 @@ func planningSystemPrompt(base string, plan PlanState) string {
 	return base + "\n\n" + prompt
 }
 
-func formatPlanStatus(plan PlanState) string {
+func formatPlanStatus(plan session.PlanState) string {
 	var b strings.Builder
 	for _, step := range plan.Steps {
 		marker := "[ ]"
@@ -139,8 +140,8 @@ func (e *planningToolExecutor) Execute(ctx context.Context, call provider.ToolCa
 		if len(steps) == 0 {
 			return provider.ToolResult{ID: call.ID, Content: "plan must contain at least one step", IsError: true}
 		}
-		if e.session != nil {
-			e.session.cleanPlan(steps)
+		if e.chat != nil {
+			e.chat.CleanPlan(steps)
 		}
 		return provider.ToolResult{ID: call.ID, Content: "Checklist recorded with " + fmt.Sprint(len(steps)) + " ordered step(s); statuses are shown in your system prompt every turn. Start with step 1: delegate it and advance only after reviewing the blocking report and accepting verified success with delegate_result."}
 	}

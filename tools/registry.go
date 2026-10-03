@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/session"
 )
 
 type handler func(context.Context, json.RawMessage) (string, error)
@@ -45,7 +45,7 @@ func (r *Registry) SetWorkspaceResolver(resolver func(context.Context) string) {
 
 func (r *Registry) rootFor(ctx context.Context) string {
 	if ctx != nil {
-		if ws := sdk.WorkspaceFromContext(ctx); ws != "" {
+		if ws := session.WorkspaceFromContext(ctx); ws != "" {
 			if cleaned, err := filepathAbsClean(ws); err == nil {
 				return cleaned
 			}

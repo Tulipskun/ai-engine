@@ -1,4 +1,4 @@
-package sdk
+package session
 
 import (
 	"database/sql"
@@ -74,7 +74,7 @@ func (s *Session) Config() provider.SessionConfig {
 
 // keyPoolSize reports how many keys this session could try. A session with no
 // pool, or a pool of one, has nothing to rotate to.
-func (s *Session) keyPoolSize() int {
+func (s *Session) KeyPoolSize() int {
 	if s == nil {
 		return 0
 	}
@@ -112,9 +112,9 @@ func (s *Session) RotateAPIKey() (string, error) {
 func (s *Session) History() []provider.Turn {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return cloneTurns(s.history)
+	return CloneTurns(s.history)
 }
-func (s *Session) cleanPlan(steps []string) {
+func (s *Session) CleanPlan(steps []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.plan = PlanState{Revision: s.plan.Revision + 1}
@@ -196,7 +196,7 @@ func (s *Session) ReserveSubAgent(id string, retry *BoundJob) (PlanState, PlanSt
 // require the same revision/step: after acceptance or plan completion the new
 // job attaches to the current ready step, or runs as investigation when no
 // step is ready.
-func (s *Session) reserveSubAgentForContinue(id string) (PlanState, PlanStep, bool, error) {
+func (s *Session) ReserveSubAgentForContinue(id string) (PlanState, PlanStep, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activeJob != "" {
@@ -277,7 +277,7 @@ func (s *Session) Append(turns ...provider.Turn) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cloned := cloneTurns(turns)
+	cloned := CloneTurns(turns)
 	start := len(s.history)
 	s.history = append(s.history, cloned...)
 	if s.store != nil {
@@ -288,7 +288,7 @@ func (s *Session) Append(turns ...provider.Turn) {
 	}
 }
 func (s *Session) ReplaceHistory(turns []provider.Turn) {
-	repaired := repairTurns(cloneTurns(turns))
+	repaired := repairTurns(CloneTurns(turns))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old := s.history
@@ -331,15 +331,15 @@ func (s *Session) LoadUsage() (provider.Usage, error) {
 	}
 	return store.LoadUsage(id)
 }
-func cloneTurns(in []provider.Turn) []provider.Turn {
+func CloneTurns(in []provider.Turn) []provider.Turn {
 	out := make([]provider.Turn, len(in))
 	copy(out, in)
 	for i := range out {
-		out[i] = cloneTurn(out[i])
+		out[i] = CloneTurn(out[i])
 	}
 	return out
 }
-func cloneTurn(turn provider.Turn) provider.Turn {
+func CloneTurn(turn provider.Turn) provider.Turn {
 	turn.Content = append([]provider.ContentPart(nil), turn.Content...)
 	if turn.ToolCall != nil {
 		v := *turn.ToolCall
@@ -388,7 +388,7 @@ func repairTurns(in []provider.Turn) []provider.Turn {
 	}
 	return final
 }
-func commitResponse(session *Session, resp provider.Response) {
+func CommitResponse(session *Session, resp provider.Response) {
 	if len(resp.Content) > 0 || resp.Reasoning != nil {
 		turn := provider.Turn{Role: provider.RoleModel, Content: append([]provider.ContentPart(nil), resp.Content...)}
 		if resp.Reasoning != nil {

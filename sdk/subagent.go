@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/session"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,7 @@ type subAgentJob struct {
 	stopRequested         bool
 	reportDelivered       bool
 	input                 Input
-	parent                *Session
+	parent                *session.Session
 	task                  string
 	status                string
 	started               time.Time
@@ -93,7 +94,7 @@ type subAgentJob struct {
 	lastReportedToolCount int
 	midJobReports         int
 	plan                  string
-	step                  PlanStep
+	step                  session.PlanStep
 	planned               bool
 	cancel                context.CancelFunc
 	done                  chan struct{}
@@ -105,11 +106,11 @@ type subAgentJob struct {
 // terminal state (REQ-019, REQ-021).
 type SubAgentEvent struct {
 	Kind         string
-	Parent       *Session
+	Parent       *session.Session
 	JobID        string
 	Status       string
 	Report       string
-	PlanStep     PlanStep
+	PlanStep     session.PlanStep
 	PlanRevision uint64
 	Input        Input
 	Trace        *TraceEvent
@@ -146,11 +147,11 @@ func newSubAgentManager(agent *Agent, cfg SubAgentConfig) *subAgentManager {
 // boundOf is the session's view of one delegated job: identity plus the plan and
 // step it was started under. The session stores that much and nothing more, so
 // delegation policy stays on this side of the boundary.
-func boundOf(job *subAgentJob) *BoundJob {
+func boundOf(job *subAgentJob) *session.BoundJob {
 	if job == nil {
 		return nil
 	}
-	return &BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}
+	return &session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}
 }
 
 // followUp is the one call for "send more work into this worker session". It
@@ -160,7 +161,7 @@ func boundOf(job *subAgentJob) *BoundJob {
 // otherwise it is follow-on work and attaches to the current ready step through
 // startContinue. Before this existed the retry branch of start was unreachable,
 // so a failed step had no recovery path at all (CHANGE-099).
-func (m *subAgentManager) followUp(parent *Session, task, id string, input Input) (string, error) {
+func (m *subAgentManager) followUp(parent *session.Session, task, id string, input Input) (string, error) {
 	id = strings.TrimSpace(id)
 	if m == nil || parent == nil {
 		return "", errors.New("sdk: sub-agent is not configured")
@@ -180,7 +181,7 @@ func (m *subAgentManager) followUp(parent *Session, task, id string, input Input
 	return m.startContinue(parent, task, prev.id, input)
 }
 
-func (m *subAgentManager) start(parent *Session, task, previous string, input Input) (string, error) {
+func (m *subAgentManager) start(parent *session.Session, task, previous string, input Input) (string, error) {
 	m.mu.Lock()
 	job, err := m.startLocked(parent, task, previous, input)
 	if err != nil {
@@ -192,7 +193,7 @@ func (m *subAgentManager) start(parent *Session, task, previous string, input In
 	return job.id, nil
 }
 
-func (m *subAgentManager) startContinue(parent *Session, task, previous string, input Input) (string, error) {
+func (m *subAgentManager) startContinue(parent *session.Session, task, previous string, input Input) (string, error) {
 	m.mu.Lock()
 	job, err := m.startContinueLocked(parent, task, previous, input)
 	if err != nil {
@@ -204,7 +205,7 @@ func (m *subAgentManager) startContinue(parent *Session, task, previous string, 
 	return job.id, nil
 }
 
-func (m *subAgentManager) startLocked(parent *Session, task, previous string, input Input) (*subAgentJob, error) {
+func (m *subAgentManager) startLocked(parent *session.Session, task, previous string, input Input) (*subAgentJob, error) {
 	if m == nil || m.agent == nil || parent == nil {
 		return nil, errors.New("sdk: sub-agent is not configured")
 	}
@@ -242,7 +243,7 @@ func (m *subAgentManager) startLocked(parent *Session, task, previous string, in
 	return job, nil
 }
 
-func (m *subAgentManager) startContinueLocked(parent *Session, task, previous string, input Input) (*subAgentJob, error) {
+func (m *subAgentManager) startContinueLocked(parent *session.Session, task, previous string, input Input) (*subAgentJob, error) {
 	if m == nil || m.agent == nil || parent == nil {
 		return nil, errors.New("sdk: sub-agent is not configured")
 	}
@@ -262,7 +263,7 @@ func (m *subAgentManager) startContinueLocked(parent *Session, task, previous st
 		return nil, errors.New("sdk: previous job is still running")
 	}
 	id := fmt.Sprintf("sa-%d", time.Now().UnixNano())
-	plan, step, planned, err := parent.reserveSubAgentForContinue(id)
+	plan, step, planned, err := parent.ReserveSubAgentForContinue(id)
 	if err != nil {
 		return nil, err
 	}
@@ -558,27 +559,19 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (prov
 	if workspace == "" {
 		workspace = strings.TrimSpace(m.cfg.Workspace)
 	}
-	ctx = WithWorkspace(ctx, workspace)
-	keys := job.parent.keys
-	if providerLocal != string(parentCfg.Provider) {
-		config, err := m.agent.Client.Router.Provider(provider.ProviderID(providerLocal))
-		if err != nil {
-			return provider.Response{}, err
-		}
-		keys = config.Keys
-		if keys == nil {
-			return provider.Response{}, fmt.Errorf("sdk: sub-agent provider %q has no key pool", providerLocal)
-		}
-	}
-	workerID := job.workerID
-	store := job.parent.store
-	if store == nil {
-		return provider.Response{}, errors.New("sdk: parent session is not persistent")
-	}
-	workerCfg := provider.SessionConfig{ID: workerID, Provider: provider.ProviderID(providerLocal), Model: model, KeyIndex: parentCfg.KeyIndex, Workspace: workspace}
-	workerCfg.InheritGeneration(parentCfg)
-	workerCfg.ThinkingLevel = chooseThinking(m.cfg.ThinkingLevel, parentCfg.ThinkingLevel)
-	worker, err := OpenSession(SessionDBPath(store.Dir(), workerID), workerCfg, keys)
+	ctx = session.WithWorkspace(ctx, workspace)
+	// The worker's session is resolved exactly like a chat's: same table, same
+	// key rules, same eviction. Only a worker's first delegation is shaped by
+	// this contract — a follow-up or continued job keeps the stored session, so
+	// the worker remembers what it already did.
+	worker, err := m.agent.Sessions.ResolveWorker(ctx, job.workerID, func(cfg *provider.SessionConfig) {
+		cfg.Provider = provider.ProviderID(providerLocal)
+		cfg.Model = model
+		cfg.Workspace = workspace
+		cfg.KeyIndex = parentCfg.KeyIndex
+		cfg.InheritGeneration(parentCfg)
+		cfg.ThinkingLevel = chooseThinking(m.cfg.ThinkingLevel, parentCfg.ThinkingLevel)
+	})
 	if err != nil {
 		return provider.Response{}, err
 	}
@@ -709,7 +702,7 @@ func oneLineText(text string) string { return strings.Join(strings.Fields(text),
 
 // statusText renders one-line job state; kept for non-LLM diagnostics only
 // (the model-facing status/history tools were removed with CHANGE-022).
-func (m *subAgentManager) statusText(parent *Session, id string) string {
+func (m *subAgentManager) statusText(parent *session.Session, id string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job := m.jobs[id]
@@ -740,7 +733,7 @@ func (m *subAgentManager) statusText(parent *Session, id string) string {
 	return text
 }
 
-func (m *subAgentManager) result(parent *Session, id, verification string) (string, error) {
+func (m *subAgentManager) result(parent *session.Session, id, verification string) (string, error) {
 	m.mu.Lock()
 	job := m.jobs[strings.TrimSpace(id)]
 	if job == nil || job.parent != parent {
@@ -778,7 +771,7 @@ func (m *subAgentManager) SetTraceSink(sink func(SubAgentEvent)) {
 	m.eventMu.Unlock()
 }
 
-func formatPlan(plan PlanState) string {
+func formatPlan(plan session.PlanState) string {
 	var b strings.Builder
 	for _, step := range plan.Steps {
 		b.WriteString(fmt.Sprintf("%d. %s\n", step.Index, step.Text))
@@ -788,7 +781,7 @@ func formatPlan(plan PlanState) string {
 
 // stop blocks until the job has actually stopped and returns the final
 // report inline (REQ-020, REQ-034).
-func (m *subAgentManager) stop(ctx context.Context, parent *Session, id string) (string, error) {
+func (m *subAgentManager) stop(ctx context.Context, parent *session.Session, id string) (string, error) {
 	m.mu.Lock()
 	job := m.jobs[id]
 	if job == nil || job.parent != parent {
@@ -839,7 +832,7 @@ func (m *subAgentManager) RequestStop(parentID, id string) error {
 	return nil
 }
 
-func (m *subAgentManager) Accept(parent *Session, id, verification string) error {
+func (m *subAgentManager) Accept(parent *session.Session, id, verification string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job := m.jobs[id]
@@ -859,7 +852,7 @@ func (m *subAgentManager) Accept(parent *Session, id, verification string) error
 
 type subAgentRunner struct {
 	manager *subAgentManager
-	parent  *Session
+	parent  *session.Session
 }
 
 func (r *subAgentRunner) Delegate(ctx context.Context, task string) (string, error) {

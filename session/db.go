@@ -1,4 +1,4 @@
-package sdk
+package session
 
 import (
 	"database/sql"

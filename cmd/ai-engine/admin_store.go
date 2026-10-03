@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/runtime"
 	"log"
 	"path/filepath"
 	"sort"
@@ -13,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/runtime/d1store"
 	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/session"
 	mobiletransport "github.com/Tulipskun/ai-engine/transport/mobile"
 )
 
@@ -54,7 +55,7 @@ type adminStore struct {
 	providerConfig *runtime.ProviderFileConfig
 	client         *d1store.Client
 
-	sessions *runtime.SessionManager
+	sessions *session.SessionManager
 	agent    *sdk.Agent
 
 	// mainRoute is the daemon's boot default, used when the system config leaves
@@ -63,7 +64,7 @@ type adminStore struct {
 }
 
 func newAdminStore(stateRoot string, client *d1store.Client, manager *runtime.ProviderManager,
-	providerConfig *runtime.ProviderFileConfig, sessions *runtime.SessionManager, agent *sdk.Agent,
+	providerConfig *runtime.ProviderFileConfig, sessions *session.SessionManager, agent *sdk.Agent,
 	mainRoute provider.SessionConfig) *adminStore {
 	return &adminStore{
 		providerPath:   filepath.Join(stateRoot, "config", "provider.json"),
@@ -492,7 +493,7 @@ func (a *adminStore) probe(ctx context.Context, config provider.ProviderConfig) 
 	}
 	var last error
 	for _, model := range attempts {
-		session := sdk.NewSession(provider.SessionConfig{
+		session := session.NewSession(provider.SessionConfig{
 			ID: "provider-probe-" + string(config.ID), Provider: config.ID, Model: model.ID,
 		}, config.Keys)
 		// The request must stream: some gateways (OpenCode Zen's free tier)

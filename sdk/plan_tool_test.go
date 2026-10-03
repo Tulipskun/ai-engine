@@ -95,11 +95,11 @@ func TestPlannerReadsThroughTheRegistry(t *testing.T) {
 
 func TestChecklistIsInjectedOnEveryPlannerTurn(t *testing.T) {
 	executor, _ := newPlannerUnderTest(t)
-	session := newTestSession(t, "with-plan")
-	executor.session = session
-	session.cleanPlan([]string{"read the spec", "change the code"})
+	sessionLocal := newTestSession(t, "with-plan")
+	executor.chat = sessionLocal
+	sessionLocal.CleanPlan([]string{"read the spec", "change the code"})
 
-	prompt := planningSystemPrompt("base prompt", session.Plan())
+	prompt := planningSystemPrompt("base prompt", sessionLocal.Plan())
 	for _, want := range []string{"base prompt", "read the spec", "change the code", "pending", "ready"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("planner prompt must carry %q, got:\n%s", want, prompt)

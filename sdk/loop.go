@@ -4,19 +4,19 @@ import (
 	"context"
 	"errors"
 	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/session"
 	"log"
 	"sync"
 	"time"
 )
 
-type SessionResolver func(context.Context, Input) (*Session, error)
-type RequestResolver func(context.Context, Input, *Session) (provider.Request, error)
+type RequestResolver func(context.Context, Input, *session.Session) (provider.Request, error)
 
 type HarnessLoop struct {
 	Client         *provider.RouterClient
 	Agent          *Agent
 	Source         InputSource
-	ResolveSession SessionResolver
+	ResolveSession func(context.Context, Input) (*session.Session, error)
 	BuildRequest   RequestResolver
 	Displays       []Display
 	DisplayTimeout time.Duration
@@ -122,18 +122,18 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 	if h == nil || (h.Client == nil && h.Agent == nil) || h.ResolveSession == nil {
 		return errors.New("sdk: incomplete harness loop configuration")
 	}
-	session, err := h.ResolveSession(ctx, input)
+	sessionLocal, err := h.ResolveSession(ctx, input)
 	if err != nil {
 		return err
 	}
-	if session == nil {
+	if sessionLocal == nil {
 		return errors.New("sdk: session resolver returned nil session")
 	}
 	if input.Turn.Role == provider.RoleToolResult || input.Turn.ToolResult != nil {
-		session.Append(input.Turn)
+		sessionLocal.Append(input.Turn)
 		return nil
 	}
-	lockKey := session.ID()
+	lockKey := sessionLocal.ID()
 	if lockKey != "" {
 		lock := h.sessionLock(lockKey)
 		lock.Lock()
@@ -152,13 +152,13 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 	}
 	var req provider.Request
 	if h.BuildRequest != nil {
-		req, err = h.BuildRequest(ctx, input, session)
+		req, err = h.BuildRequest(ctx, input, sessionLocal)
 		if err != nil {
 			return err
 		}
 	}
-	req.Messages = cloneTurns(session.History())
-	req.Messages = append(req.Messages, cloneTurn(input.Turn))
+	req.Messages = session.CloneTurns(sessionLocal.History())
+	req.Messages = append(req.Messages, session.CloneTurn(input.Turn))
 	var responseTraced bool
 	dispatchTrace := func(traceCtx context.Context, event TraceEvent) {
 		switch event.Stage {
@@ -175,18 +175,18 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 			DispatchDisplay(traceCtx, display, Output{Source: input.Source, SessionID: input.SessionID, Trace: &traceCopy, Metadata: metadata}, h.DisplayTimeout)
 		}
 	}
-	ctx = WithSessionID(ctx, session.ID())
+	ctx = session.WithSessionID(ctx, sessionLocal.ID())
 	ctx = context.WithValue(ctx, lifecycleInputKey{}, cloneInputRoute(input))
 	// Per-session agent config (sub-agent pin) takes precedence over the
 	// global defaults for this turn only (ACP session config pattern).
 	if h.ApplySessionConfig != nil {
-		h.ApplySessionConfig(session.ID())
+		h.ApplySessionConfig(sessionLocal.ID())
 	}
 	var resp provider.Response
 	if h.Agent != nil {
-		resp, err = h.Agent.RunTurnWithTraceAndEntry(ctx, session, input.Turn, req, dispatchTrace, h.Entry)
+		resp, err = h.Agent.RunTurnWithTraceAndEntry(ctx, sessionLocal, input.Turn, req, dispatchTrace, h.Entry)
 	} else {
-		resp, err = h.Client.GenerateTurn(ctx, session, input.Turn, req)
+		resp, err = h.Client.GenerateTurn(ctx, sessionLocal, input.Turn, req)
 	}
 	if err != nil {
 		return err
