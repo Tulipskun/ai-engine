@@ -707,20 +707,28 @@ func (m *subAgentManager) statusText(parent *Session, id string) string {
 
 func (m *subAgentManager) result(parent *Session, id, verification string) (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	job := m.jobs[strings.TrimSpace(id)]
 	if job == nil || job.parent != parent {
+		m.mu.Unlock()
 		return "", errors.New("sdk: sub-agent job not found: " + strings.TrimSpace(id))
 	}
 	report := m.reportLocked(job)
 	if strings.TrimSpace(verification) == "" {
+		m.mu.Unlock()
 		return report, nil
 	}
-	if err := m.Accept(parent, id, verification); err != nil {
+	if job.status != "completed" || !job.reviewed || job.accepted || job.superseded || strings.TrimSpace(verification) == "" {
+		m.mu.Unlock()
+		return report, errors.New("sdk: wait for the final report delivered automatically, then provide verified success before acceptance; failed/incomplete work needs follow-up")
+	}
+	if err := parent.acceptSubAgent(job); err != nil {
+		m.mu.Unlock()
 		return report, err
 	}
-	return report + "
-Verified result accepted; the next plan step is now ready, if any.", nil
+	job.accepted = true
+	job.events = append(job.events, "Main accepted verified success: "+verification)
+	m.mu.Unlock()
+	return report + "\nVerified result accepted; the next plan step is now ready, if any.", nil
 }
 
 func (m *subAgentManager) SetEventSink(sink func(SubAgentEvent)) {
@@ -871,6 +879,7 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 	result := ToolResult{ID: call.ID}
 	var input struct {
 		Task         string `json:"task"`
+		Message      string `json:"message"`
 		JobID        string `json:"job_id"`
 		Verification string `json:"verification"`
 	}
