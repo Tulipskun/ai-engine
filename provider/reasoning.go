@@ -1,4 +1,4 @@
-package sdk
+package provider
 
 // ReasoningState preserves provider-native thinking/reasoning data across an
 // agent tool loop. Providers that require their reasoning text to be echoed

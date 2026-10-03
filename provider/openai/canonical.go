@@ -1,25 +1,25 @@
 package openai
 
 import (
-	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/provider"
 )
 
 // Canonical OpenAI Responses wire is the central interface.
 //
 // Flow:
 //
-//	sdk.Request --BuildResponsesRequest--> OpenAI Responses map (canonical)
+//	provider.Request --BuildResponsesRequest--> OpenAI Responses map (canonical)
 //	    --anthropic.BuildFromOpenAI / gemini.BuildFromOpenAI--> provider-native payload
 //
 // Native provider responses are converted back through the same OpenAI
 // Responses shape (see anthropic.ToOpenAIResponse / gemini.ToOpenAIResponse)
-// before becoming sdk.Response via ParseResponsesResponse.
+// before becoming provider.Response via ParseResponsesResponse.
 //
 // Chat Completions (BuildChatRequest/ParseChatResponse) is kept only as a
 // fallback for providers that reject /responses.
 
 // Request is the canonical OpenAI Responses request shape used as the
-// intermediate representation between sdk.Request and provider-native payloads.
+// intermediate representation between provider.Request and provider-native payloads.
 type Request struct {
 	Model            string         `json:"model"`
 	Instructions     string         `json:"instructions,omitempty"`
@@ -37,9 +37,9 @@ type Request struct {
 	Stream           bool           `json:"stream,omitempty"`
 }
 
-// Canonical converts an sdk.Request into the canonical OpenAI struct form.
+// Canonical converts an provider.Request into the canonical OpenAI struct form.
 // BuildResponsesRequest remains the map-based wire form used for HTTP.
-func Canonical(req sdk.Request) Request {
+func Canonical(req provider.Request) Request {
 	wire := BuildResponsesRequest(req)
 	out := Request{Stream: req.Stream}
 	if v, _ := wire["model"].(string); v != "" {
@@ -217,12 +217,12 @@ func ItemMap(item any) map[string]any {
 	return m
 }
 
-// ResponsesResponseFromParts builds an sdk.Response through the canonical
+// ResponsesResponseFromParts builds an provider.Response through the canonical
 // OpenAI Responses output shape: message content + function_call items +
 // optional reasoning. Native adapters (anthropic/gemini) convert their wire
-// ResponsesResponse into these parts first, then delegate here so sdk.Response
+// ResponsesResponse into these parts first, then delegate here so provider.Response
 // construction stays in one place.
-func ResponsesResponseFromParts(model, status string, texts []string, toolCalls []sdk.ToolCall, reasoning *sdk.ReasoningState, usage sdk.Usage) sdk.Response {
+func ResponsesResponseFromParts(model, status string, texts []string, toolCalls []provider.ToolCall, reasoning *provider.ReasoningState, usage provider.Usage) provider.Response {
 	r := ResponsesResponse{Model: model, Status: status}
 	r.Usage.InputTokens = usage.InputTokens
 	r.Usage.OutputTokens = usage.OutputTokens

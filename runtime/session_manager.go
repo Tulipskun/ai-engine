@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
+	"github.com/Tulipskun/ai-engine/provider"
 	"path/filepath"
 	"sync"
 
@@ -20,12 +21,12 @@ type SessionManager struct {
 	// defaults supplies the provider and model a phone chose for a chat; it may
 	// do I/O, so it is guarded separately from the session table.
 	defaultsMu sync.RWMutex
-	defaults   func(context.Context, string) (sdk.ProviderID, string, bool)
+	defaults   func(context.Context, string) (provider.ProviderID, string, bool)
 
 	dir          string
-	base         sdk.SessionConfig
-	keys         *sdk.KeyPool
-	providerKeys map[sdk.ProviderID]*sdk.KeyPool
+	base         provider.SessionConfig
+	keys         *provider.KeyPool
+	providerKeys map[provider.ProviderID]*provider.KeyPool
 	mu           sync.RWMutex
 	sessions     map[string]*list.Element
 	lru          *list.List
@@ -40,19 +41,19 @@ func sessionDir(path string) string {
 	return clean
 }
 
-func NewSessionManager(path string, base sdk.SessionConfig, keys *sdk.KeyPool) *SessionManager {
-	return &SessionManager{dir: sessionDir(path), base: base, keys: keys, providerKeys: make(map[sdk.ProviderID]*sdk.KeyPool), sessions: make(map[string]*list.Element), lru: list.New(), maxCached: defaultMaxCachedSessions}
+func NewSessionManager(path string, base provider.SessionConfig, keys *provider.KeyPool) *SessionManager {
+	return &SessionManager{dir: sessionDir(path), base: base, keys: keys, providerKeys: make(map[provider.ProviderID]*provider.KeyPool), sessions: make(map[string]*list.Element), lru: list.New(), maxCached: defaultMaxCachedSessions}
 }
-func NewSessionManagerWithProviders(path string, base sdk.SessionConfig, providers []sdk.ProviderConfig) *SessionManager {
-	providerKeys := make(map[sdk.ProviderID]*sdk.KeyPool, len(providers))
-	var fallback *sdk.KeyPool
-	for _, provider := range providers {
-		if provider.Keys == nil {
+func NewSessionManagerWithProviders(path string, base provider.SessionConfig, providers []provider.ProviderConfig) *SessionManager {
+	providerKeys := make(map[provider.ProviderID]*provider.KeyPool, len(providers))
+	var fallback *provider.KeyPool
+	for _, providerLocal := range providers {
+		if providerLocal.Keys == nil {
 			continue
 		}
-		providerKeys[provider.ID] = provider.Keys
+		providerKeys[providerLocal.ID] = providerLocal.Keys
 		if fallback == nil {
-			fallback = provider.Keys
+			fallback = providerLocal.Keys
 		}
 	}
 	if base.Provider != "" && providerKeys[base.Provider] != nil {
@@ -66,7 +67,7 @@ func NewSessionManagerWithProviders(path string, base sdk.SessionConfig, provide
 // session row hydrated from D1 keeps whatever provider wrote it, so without
 // this a chat created before the restart would keep a provider that no longer
 // exists and every turn on it fails with "provider is required" (REQ-046(4)).
-func (m *SessionManager) AdoptProviders(configs []sdk.ProviderConfig, base sdk.SessionConfig) {
+func (m *SessionManager) AdoptProviders(configs []provider.ProviderConfig, base provider.SessionConfig) {
 	if m == nil {
 		return
 	}
@@ -109,12 +110,12 @@ func (m *SessionManager) repointUnknownProviderLocked(session *sdk.Session) erro
 	return nil
 }
 
-func (m *SessionManager) RegisterProvider(provider sdk.ProviderID, keys *sdk.KeyPool) {
-	if m == nil || provider == "" || keys == nil {
+func (m *SessionManager) RegisterProvider(providerLocal provider.ProviderID, keys *provider.KeyPool) {
+	if m == nil || providerLocal == "" || keys == nil {
 		return
 	}
 	m.mu.Lock()
-	m.providerKeys[provider] = keys
+	m.providerKeys[providerLocal] = keys
 	m.mu.Unlock()
 }
 
@@ -122,7 +123,7 @@ func (m *SessionManager) RegisterProvider(provider sdk.ProviderID, keys *sdk.Key
 // chat was last saved with. It runs outside the manager's lock, so it may do
 // network work (the daemon reads the row from D1), and it is only consulted for
 // a session the manager has to open.
-func (m *SessionManager) SetSessionDefaults(lookup func(context.Context, string) (sdk.ProviderID, string, bool)) {
+func (m *SessionManager) SetSessionDefaults(lookup func(context.Context, string) (provider.ProviderID, string, bool)) {
 	if m == nil {
 		return
 	}
@@ -131,7 +132,7 @@ func (m *SessionManager) SetSessionDefaults(lookup func(context.Context, string)
 	m.defaultsMu.Unlock()
 }
 
-func (m *SessionManager) sessionDefaults(ctx context.Context, sessionID string) (sdk.ProviderID, string, bool) {
+func (m *SessionManager) sessionDefaults(ctx context.Context, sessionID string) (provider.ProviderID, string, bool) {
 	m.defaultsMu.RLock()
 	lookup := m.defaults
 	m.defaultsMu.RUnlock()
@@ -174,12 +175,12 @@ func (m *SessionManager) Resolve(ctx context.Context, input sdk.Input) (*sdk.Ses
 	// What the phone picked last time wins over the boot default, and only when
 	// the daemon can still route to it.
 	applied := false
-	if provider, model, ok := m.sessionDefaults(ctx, input.SessionID); ok && provider != "" && model != "" {
+	if providerLocal, model, ok := m.sessionDefaults(ctx, input.SessionID); ok && providerLocal != "" && model != "" {
 		m.mu.RLock()
-		providerKeys := m.providerKeys[provider]
+		providerKeys := m.providerKeys[providerLocal]
 		m.mu.RUnlock()
 		if providerKeys != nil {
-			if err := session.SetProvider(provider, providerKeys); err == nil {
+			if err := session.SetProvider(providerLocal, providerKeys); err == nil {
 				if err := session.SetModel(model); err == nil {
 					applied = true
 				}
@@ -249,7 +250,7 @@ func (m *SessionManager) ListSessions(limit int) ([]sdk.SessionInfo, error) {
 func (m *SessionManager) ApplyGeneration(
 	ctx context.Context,
 	sessionID string,
-	settings sdk.GenerationSettings,
+	settings provider.GenerationSettings,
 	clear bool,
 	clearKnobs []string,
 ) (string, error) {
@@ -338,16 +339,16 @@ func (m *SessionManager) ApplyGeneration(
 
 // SessionGeneration reads back what one chat runs on, so the phone can be told
 // what it is editing rather than guessing from what it last sent.
-func (m *SessionManager) SessionGeneration(ctx context.Context, sessionID string) (sdk.GenerationSettings, bool, error) {
+func (m *SessionManager) SessionGeneration(ctx context.Context, sessionID string) (provider.GenerationSettings, bool, error) {
 	if m == nil {
-		return sdk.GenerationSettings{}, false, errors.New("runtime: session manager is nil")
+		return provider.GenerationSettings{}, false, errors.New("runtime: session manager is nil")
 	}
 	session, err := m.Resolve(ctx, sdk.Input{SessionID: sessionID})
 	if err != nil {
-		return sdk.GenerationSettings{}, false, err
+		return provider.GenerationSettings{}, false, err
 	}
 	cfg := session.Config()
-	return sdk.GenerationSettings{
+	return provider.GenerationSettings{
 		ThinkingLevel:    cfg.ThinkingLevel,
 		Temperature:      cfg.Temperature,
 		TopP:             cfg.TopP,

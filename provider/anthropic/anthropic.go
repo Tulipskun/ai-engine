@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/internal"
-	"github.com/Tulipskun/ai-engine/sdk/providers/openai"
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/provider/internal"
+	"github.com/Tulipskun/ai-engine/provider/openai"
 )
 
 type Client struct {
@@ -21,14 +21,18 @@ type Client struct {
 func New(apiKey string) *Client {
 	return &Client{BaseURL: "https://api.anthropic.com/v1", APIKey: apiKey, APIVersion: "2023-06-01", HTTP: http.DefaultClient}
 }
-func (c *Client) WithAPIKey(key string) sdk.Provider      { cp := *c; cp.APIKey = key; return &cp }
-func (c *Client) WithBaseURL(baseURL string) sdk.Provider { cp := *c; cp.BaseURL = baseURL; return &cp }
-func (c *Client) WithHeaders(headers map[string]string) sdk.Provider {
+func (c *Client) WithAPIKey(key string) provider.Provider { cp := *c; cp.APIKey = key; return &cp }
+func (c *Client) WithBaseURL(baseURL string) provider.Provider {
+	cp := *c
+	cp.BaseURL = baseURL
+	return &cp
+}
+func (c *Client) WithHeaders(headers map[string]string) provider.Provider {
 	cp := *c
 	cp.Headers = cloneHeaders(headers)
 	return &cp
 }
-func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, error) {
+func (c *Client) ListModels(ctx context.Context, apiKey string) ([]provider.Model, error) {
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -44,7 +48,7 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 	if err := internal.DoJSON(ctx, c.http(), http.MethodGet, c.BaseURL+"/models", c.headers(), nil, &r); err != nil {
 		return nil, err
 	}
-	models := make([]sdk.Model, 0, len(r.Data))
+	models := make([]provider.Model, 0, len(r.Data))
 	for _, item := range r.Data {
 		if item.ID == "" {
 			continue
@@ -53,15 +57,15 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 		if name == "" {
 			name = item.ID
 		}
-		models = append(models, sdk.Model{ID: item.ID, Name: name, SupportsStreaming: true, SupportsTools: true, SupportsTemperature: true})
+		models = append(models, provider.Model{ID: item.ID, Name: name, SupportsStreaming: true, SupportsTools: true, SupportsTemperature: true})
 	}
 	return models, nil
 }
 func (c *Client) Name() string { return "anthropic" }
 
 // build converts via the central OpenAI Responses interface:
-// sdk.Request -> OpenAI canonical -> Anthropic native.
-func build(req sdk.Request) map[string]any {
+// provider.Request -> OpenAI canonical -> Anthropic native.
+func build(req provider.Request) map[string]any {
 	canonical := openai.BuildResponsesRequest(req)
 	// top_k and stop are not OpenAI parameters so they never entered the
 	// canonical map, but this map is only an intermediate on the way to Anthropic,
@@ -96,7 +100,7 @@ func BuildFromOpenAI(openAIReq map[string]any) map[string]any {
 	if sys := openai.InstructionsOf(openAIReq); sys != "" {
 		b["system"] = sys
 	}
-	if effort := openai.ReasoningEffortOf(openAIReq); effort != "" && effort != string(sdk.ThinkingNone) {
+	if effort := openai.ReasoningEffortOf(openAIReq); effort != "" && effort != string(provider.ThinkingNone) {
 		// Extended thinking pins the sampling knobs: temperature has to stay at
 		// its default while thinking is on, and any other value is refused. Not
 		// sending the key is how "leave it at the default" is said.
@@ -222,16 +226,16 @@ func cloneHeaders(in map[string]string) map[string]string {
 	}
 	return out
 }
-func (c *Client) Generate(ctx context.Context, req sdk.Request) (sdk.Response, error) {
+func (c *Client) Generate(ctx context.Context, req provider.Request) (provider.Response, error) {
 	var r response
 	if err := internal.DoJSON(ctx, c.http(), http.MethodPost, c.BaseURL+"/messages", c.headers(), build(req), &r); err != nil {
-		return sdk.Response{}, err
+		return provider.Response{}, err
 	}
 	return ToOpenAIResponse(r), nil
 }
-func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event, error) {
+func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 	req.Stream = true
-	ch := make(chan sdk.Event, 16)
+	ch := make(chan provider.Event, 16)
 	go func() {
 		defer close(ch)
 		type toolState struct{ id, name, args string }
@@ -265,18 +269,18 @@ func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event,
 				case "thinking":
 					reasoningID = e.ContentBlock.ID
 					if e.ContentBlock.Thinking != "" {
-						ch <- sdk.Event{Type: sdk.EventReasoning, Reasoning: &sdk.ReasoningState{ID: reasoningID, Text: e.ContentBlock.Thinking}}
+						ch <- provider.Event{Type: provider.EventReasoning, Reasoning: &provider.ReasoningState{ID: reasoningID, Text: e.ContentBlock.Thinking}}
 					}
 				}
 			case "content_block_delta":
 				switch e.Delta.Type {
 				case "text_delta":
 					if e.Delta.Text != "" {
-						ch <- sdk.Event{Type: sdk.EventText, Text: e.Delta.Text}
+						ch <- provider.Event{Type: provider.EventText, Text: e.Delta.Text}
 					}
 				case "thinking_delta":
 					if e.Delta.Thinking != "" {
-						ch <- sdk.Event{Type: sdk.EventReasoning, Reasoning: &sdk.ReasoningState{ID: reasoningID, Text: e.Delta.Thinking}}
+						ch <- provider.Event{Type: provider.EventReasoning, Reasoning: &provider.ReasoningState{ID: reasoningID, Text: e.Delta.Thinking}}
 					}
 				case "input_json_delta":
 					if state := tools[e.Index]; state != nil {
@@ -285,16 +289,16 @@ func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event,
 				}
 			case "content_block_stop":
 				if state := tools[e.Index]; state != nil {
-					ch <- sdk.Event{Type: sdk.EventToolCall, ToolCall: &sdk.ToolCall{ID: state.id, Name: state.name, Arguments: state.args}}
+					ch <- provider.Event{Type: provider.EventToolCall, ToolCall: &provider.ToolCall{ID: state.id, Name: state.name, Arguments: state.args}}
 					delete(tools, e.Index)
 				}
 			case "message_stop":
-				ch <- sdk.Event{Type: sdk.EventDone}
+				ch <- provider.Event{Type: provider.EventDone}
 			}
 			return nil
 		})
 		if err != nil {
-			ch <- sdk.Event{Type: sdk.EventError, Err: err}
+			ch <- provider.Event{Type: provider.EventError, Err: err}
 		}
 	}()
 	return ch, nil
@@ -306,25 +310,25 @@ func (c *Client) http() *http.Client {
 	return http.DefaultClient
 }
 
-// ToOpenAIResponse converts a native Anthropic response into sdk.Response
+// ToOpenAIResponse converts a native Anthropic response into provider.Response
 // through the central OpenAI Responses shape.
-func ToOpenAIResponse(r response) sdk.Response {
+func ToOpenAIResponse(r response) provider.Response {
 	var texts []string
-	var calls []sdk.ToolCall
+	var calls []provider.ToolCall
 	for _, p := range r.Content {
 		switch p.Type {
 		case "text":
 			texts = append(texts, p.Text)
 		case "tool_use":
-			calls = append(calls, sdk.ToolCall{ID: p.ID, Name: p.Name, Arguments: string(p.Input)})
+			calls = append(calls, provider.ToolCall{ID: p.ID, Name: p.Name, Arguments: string(p.Input)})
 		}
 	}
 	// Anthropic counts input_tokens without the cache parts and reports no
 	// reasoning token count at all, so ReasoningTokens stays 0 rather than
 	// being estimated. InputIncludesCache stays false.
-	usage := sdk.Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.Input + r.Usage.OutputTokens + r.Usage.CacheRead + r.Usage.CacheCreation, CacheReadTokens: r.Usage.CacheRead, CacheWriteTokens: r.Usage.CacheCreation}
+	usage := provider.Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.Input + r.Usage.OutputTokens + r.Usage.CacheRead + r.Usage.CacheCreation, CacheReadTokens: r.Usage.CacheRead, CacheWriteTokens: r.Usage.CacheCreation}
 	out := openai.ResponsesResponseFromParts(r.Model, r.StopReason, texts, calls, nil, usage)
 	out.Provider = "anthropic"
-	out.Cache = sdk.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}
+	out.Cache = provider.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}
 	return out
 }

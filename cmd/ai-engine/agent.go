@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ import (
 
 // newAgentWithWorkspaces builds the Agent with its worker tool registry and the
 // per-session workspace lookup, then applies the stored sub-agent defaults.
-func newAgentWithWorkspaces(client *sdk.RouterClient, workspace, state string, cfg runtime.SystemConfig, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
+func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg runtime.SystemConfig, workspaceFor func(context.Context) string) (*sdk.Agent, error) {
 	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
@@ -64,8 +65,8 @@ func systemPrompt(agent *sdk.Agent) string {
 // OpenCode client finds them: the global one first, then AGENTS.md from the
 // working directory upwards. Only the OpenCode adapter sends them on; every
 // other provider keeps the system prompt alone.
-func instructionFiles() []sdk.Instruction {
-	var out []sdk.Instruction
+func instructionFiles() []provider.Instruction {
+	var out []provider.Instruction
 	add := func(path string) {
 		raw, err := os.ReadFile(path)
 		if err != nil || len(raw) == 0 {
@@ -78,7 +79,7 @@ func instructionFiles() []sdk.Instruction {
 			log.Printf("instructions: %s is %d bytes, using the first %d", path, len(raw), maxBytes)
 			raw = raw[:maxBytes]
 		}
-		out = append(out, sdk.Instruction{Path: path, Text: string(raw)})
+		out = append(out, provider.Instruction{Path: path, Text: string(raw)})
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		add(filepath.Join(home, ".config", "opencode", "AGENTS.md"))

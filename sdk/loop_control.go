@@ -3,6 +3,7 @@ package sdk
 import (
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 )
 
 // Hard loop-control caps (REQ-045). These are system-level fail-fast limits
@@ -72,7 +73,7 @@ func (t *loopControlTracker) noteCall(name string) error {
 
 // noteResult enforces the per-result bash output cap. Non-bash tools and
 // payloads under the limit are untouched.
-func (t *loopControlTracker) noteResult(name string, result ToolResult) error {
+func (t *loopControlTracker) noteResult(name string, result provider.ToolResult) error {
 	if len(result.Content) > LoopControlMaxBashOutputBytes && name == "bash" {
 		return fmt.Errorf("%w: %d bytes (max %d); narrow the command, redirect to a file, or page the output",
 			ErrLoopControlBashOutputTooLarge, len(result.Content), LoopControlMaxBashOutputBytes)

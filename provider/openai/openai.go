@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/internal"
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/provider/internal"
 	"net/http"
 	"strings"
 	"time"
@@ -21,14 +21,18 @@ type Client struct {
 func New(apiKey string) *Client {
 	return &Client{BaseURL: "https://api.openai.com/v1", APIKey: apiKey, HTTP: http.DefaultClient}
 }
-func (c *Client) WithAPIKey(key string) sdk.Provider      { cp := *c; cp.APIKey = key; return &cp }
-func (c *Client) WithBaseURL(baseURL string) sdk.Provider { cp := *c; cp.BaseURL = baseURL; return &cp }
-func (c *Client) WithHeaders(headers map[string]string) sdk.Provider {
+func (c *Client) WithAPIKey(key string) provider.Provider { cp := *c; cp.APIKey = key; return &cp }
+func (c *Client) WithBaseURL(baseURL string) provider.Provider {
+	cp := *c
+	cp.BaseURL = baseURL
+	return &cp
+}
+func (c *Client) WithHeaders(headers map[string]string) provider.Provider {
 	cp := *c
 	cp.Headers = cloneHeaders(headers)
 	return &cp
 }
-func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, error) {
+func (c *Client) ListModels(ctx context.Context, apiKey string) ([]provider.Model, error) {
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -43,10 +47,10 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 	if err := internal.DoJSON(ctx, c.http(), http.MethodGet, c.BaseURL+"/models", c.headers(), nil, &r); err != nil {
 		return nil, err
 	}
-	models := make([]sdk.Model, 0, len(r.Data))
+	models := make([]provider.Model, 0, len(r.Data))
 	for _, item := range r.Data {
 		if item.ID != "" {
-			models = append(models, sdk.Model{ID: item.ID, Name: item.ID, SupportsStreaming: true, SupportsTemperature: true})
+			models = append(models, provider.Model{ID: item.ID, Name: item.ID, SupportsStreaming: true, SupportsTemperature: true})
 		}
 	}
 	return models, nil
@@ -108,7 +112,7 @@ type ChatResponse struct {
 	} `json:"usage"`
 }
 
-func BuildResponsesRequest(req sdk.Request) map[string]any {
+func BuildResponsesRequest(req provider.Request) map[string]any {
 	b := map[string]any{"model": req.Model, "stream": req.Stream}
 	if req.SystemPrompt != "" {
 		b["instructions"] = req.SystemPrompt
@@ -116,7 +120,7 @@ func BuildResponsesRequest(req sdk.Request) map[string]any {
 	var input []any
 	for _, m := range req.Messages {
 		switch m.Role {
-		case sdk.RoleUser, sdk.RoleModel:
+		case provider.RoleUser, provider.RoleModel:
 			if m.Reasoning != nil && m.Reasoning.Text != "" {
 				item := map[string]any{"type": "reasoning", "status": "completed", "content": []any{map[string]any{"type": "reasoning_text", "text": m.Reasoning.Text}}}
 				if m.Reasoning.ID != "" {
@@ -130,16 +134,16 @@ func BuildResponsesRequest(req sdk.Request) map[string]any {
 			}
 			if text != "" {
 				role := string(m.Role)
-				if m.Role == sdk.RoleModel {
+				if m.Role == provider.RoleModel {
 					role = "assistant"
 				}
 				input = append(input, map[string]any{"type": "message", "role": role, "content": text})
 			}
-		case sdk.RoleToolCall:
+		case provider.RoleToolCall:
 			if m.ToolCall != nil {
 				input = append(input, map[string]any{"type": "function_call", "call_id": m.ToolCall.ID, "name": m.ToolCall.Name, "arguments": m.ToolCall.Arguments})
 			}
-		case sdk.RoleToolResult:
+		case provider.RoleToolResult:
 			if m.ToolResult != nil {
 				input = append(input, map[string]any{"type": "function_call_output", "call_id": m.ToolResult.ID, "output": m.ToolResult.Content})
 			}
@@ -179,8 +183,8 @@ func addStreamUsage(b map[string]any, stream bool) {
 		b["stream_options"] = map[string]any{"include_usage": true}
 	}
 }
-func build(req sdk.Request) map[string]any { return BuildResponsesRequest(req) }
-func BuildChatRequest(req sdk.Request) map[string]any {
+func build(req provider.Request) map[string]any { return BuildResponsesRequest(req) }
+func BuildChatRequest(req provider.Request) map[string]any {
 	b := map[string]any{"model": req.Model, "stream": req.Stream}
 	messages := make([]any, 0, len(req.Messages)+1)
 	if req.SystemPrompt != "" {
@@ -188,23 +192,23 @@ func BuildChatRequest(req sdk.Request) map[string]any {
 	}
 	for _, m := range req.Messages {
 		switch m.Role {
-		case sdk.RoleUser, sdk.RoleModel:
+		case provider.RoleUser, provider.RoleModel:
 			content := ""
 			for _, p := range m.Content {
 				content += p.Text
 			}
 			if content != "" {
 				role := "user"
-				if m.Role == sdk.RoleModel {
+				if m.Role == provider.RoleModel {
 					role = "assistant"
 				}
 				messages = append(messages, map[string]any{"role": role, "content": content})
 			}
-		case sdk.RoleToolCall:
+		case provider.RoleToolCall:
 			if m.ToolCall != nil {
 				messages = append(messages, map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": m.ToolCall.ID, "type": "function", "function": map[string]any{"name": m.ToolCall.Name, "arguments": m.ToolCall.Arguments}}}})
 			}
-		case sdk.RoleToolResult:
+		case provider.RoleToolResult:
 			if m.ToolResult != nil {
 				messages = append(messages, map[string]any{"role": "tool", "tool_call_id": m.ToolResult.ID, "content": m.ToolResult.Content})
 			}
@@ -259,9 +263,9 @@ func BuildChatRequest(req sdk.Request) map[string]any {
 // reasoningEffort maps the session's thinking level onto what a provider is
 // asked for. "none" and "off" both mean "do not ask for reasoning at all", which
 // is expressed by leaving the key out entirely rather than by an empty string.
-func reasoningEffort(req sdk.Request) string {
+func reasoningEffort(req provider.Request) string {
 	switch req.ThinkingLevel {
-	case sdk.ThinkingLow, sdk.ThinkingMedium, sdk.ThinkingHigh:
+	case provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh:
 		return string(req.ThinkingLevel)
 	default:
 		return ""
@@ -273,13 +277,13 @@ func reasoningEffort(req sdk.Request) string {
 // sent to OpenAI verbatim as the HTTP body, so an extra key here would be a
 // rejected parameter rather than a carried setting. Adapters that want these
 // merge this into their own payload instead.
-func SamplingKnobs(req sdk.Request) map[string]any {
+func SamplingKnobs(req provider.Request) map[string]any {
 	b := map[string]any{}
 	carrySamplingKnobs(b, req)
 	return b
 }
 
-func carrySamplingKnobs(b map[string]any, req sdk.Request) {
+func carrySamplingKnobs(b map[string]any, req provider.Request) {
 	if req.TopK != nil {
 		b["top_k"] = *req.TopK
 	}
@@ -296,50 +300,50 @@ func carrySamplingKnobs(b map[string]any, req sdk.Request) {
 		b["seed"] = *req.Seed
 	}
 }
-func buildChat(req sdk.Request) map[string]any { return BuildChatRequest(req) }
-func ParseResponsesResponse(r ResponsesResponse) sdk.Response {
-	out := sdk.Response{Provider: "openai", Model: r.Model, Usage: sdk.Usage{InputTokens: r.Usage.InputTokens, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.InputDetails.Cached, ReasoningTokens: r.Usage.OutputDetails.Reasoning, InputIncludesCache: true}, Cache: sdk.CacheInfo{Layer: "provider"}}
+func buildChat(req provider.Request) map[string]any { return BuildChatRequest(req) }
+func ParseResponsesResponse(r ResponsesResponse) provider.Response {
+	out := provider.Response{Provider: "openai", Model: r.Model, Usage: provider.Usage{InputTokens: r.Usage.InputTokens, OutputTokens: r.Usage.OutputTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.InputDetails.Cached, ReasoningTokens: r.Usage.OutputDetails.Reasoning, InputIncludesCache: true}, Cache: provider.CacheInfo{Layer: "provider"}}
 	out.Cache.Hit = out.Usage.CacheReadTokens > 0
 	for _, item := range r.Output {
 		switch item.Type {
 		case "reasoning":
 			for _, p := range item.Content {
 				if p.Type == "reasoning_text" && p.Text != "" {
-					out.Reasoning = &sdk.ReasoningState{ID: item.ID, Text: p.Text}
+					out.Reasoning = &provider.ReasoningState{ID: item.ID, Text: p.Text}
 					break
 				}
 			}
 		case "message":
 			for _, p := range item.Content {
 				if p.Text != "" {
-					out.Content = append(out.Content, sdk.ContentPart{Type: sdk.ContentText, Text: p.Text})
+					out.Content = append(out.Content, provider.ContentPart{Type: provider.ContentText, Text: p.Text})
 				}
 			}
 		case "function_call":
-			out.ToolCalls = append(out.ToolCalls, sdk.ToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
+			out.ToolCalls = append(out.ToolCalls, provider.ToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
 		}
 	}
 	out.FinishReason = r.Status
 	return out
 }
-func parseResponse(r ResponsesResponse) sdk.Response { return ParseResponsesResponse(r) }
-func ParseChatResponse(r ChatResponse) sdk.Response {
-	out := sdk.Response{Provider: "openai", Model: r.Model, Usage: sdk.Usage{InputTokens: r.Usage.PromptTokens, OutputTokens: r.Usage.CompletionTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.PromptDetails.Cached, ReasoningTokens: r.Usage.CompletionDetails.Reasoning, InputIncludesCache: true}, Cache: sdk.CacheInfo{Layer: "provider"}}
+func parseResponse(r ResponsesResponse) provider.Response { return ParseResponsesResponse(r) }
+func ParseChatResponse(r ChatResponse) provider.Response {
+	out := provider.Response{Provider: "openai", Model: r.Model, Usage: provider.Usage{InputTokens: r.Usage.PromptTokens, OutputTokens: r.Usage.CompletionTokens, TotalTokens: r.Usage.TotalTokens, CacheReadTokens: r.Usage.PromptDetails.Cached, ReasoningTokens: r.Usage.CompletionDetails.Reasoning, InputIncludesCache: true}, Cache: provider.CacheInfo{Layer: "provider"}}
 	out.Cache.Hit = out.Usage.CacheReadTokens > 0
 	if len(r.Choices) == 0 {
 		return out
 	}
 	choice := r.Choices[0]
 	if choice.Message.Content != "" {
-		out.Content = append(out.Content, sdk.ContentPart{Type: sdk.ContentText, Text: choice.Message.Content})
+		out.Content = append(out.Content, provider.ContentPart{Type: provider.ContentText, Text: choice.Message.Content})
 	}
 	for _, call := range choice.Message.ToolCalls {
-		out.ToolCalls = append(out.ToolCalls, sdk.ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
+		out.ToolCalls = append(out.ToolCalls, provider.ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
 	}
 	out.FinishReason = choice.FinishReason
 	return out
 }
-func parseChatResponse(r ChatResponse) sdk.Response { return ParseChatResponse(r) }
+func parseChatResponse(r ChatResponse) provider.Response { return ParseChatResponse(r) }
 func (c *Client) headers() map[string]string {
 	h := map[string]string{"Authorization": "Bearer " + c.APIKey}
 	for k, v := range c.Headers {
@@ -373,18 +377,18 @@ func isResponsesModelUnsupported(err error) bool {
 	}
 	return strings.Contains(httpErr.Body, `"code":"model_not_supported_on_endpoint"`) && strings.Contains(httpErr.Body, `/v1/responses`)
 }
-func (c *Client) Generate(ctx context.Context, req sdk.Request) (sdk.Response, error) {
+func (c *Client) Generate(ctx context.Context, req provider.Request) (provider.Response, error) {
 	var r ResponsesResponse
 	err := internal.DoJSON(ctx, c.http(), http.MethodPost, c.BaseURL+"/responses", c.headers(), build(req), &r)
 	if err == nil {
 		return parseResponse(r), nil
 	}
 	if !isResponsesModelUnsupported(err) {
-		return sdk.Response{}, err
+		return provider.Response{}, err
 	}
 	var chat ChatResponse
 	if chatErr := internal.DoJSON(ctx, c.http(), http.MethodPost, c.BaseURL+"/chat/completions", c.headers(), buildChat(req), &chat); chatErr != nil {
-		return sdk.Response{}, chatErr
+		return provider.Response{}, chatErr
 	}
 	return parseChatResponse(chat), nil
 }
@@ -394,9 +398,9 @@ func (c *Client) Generate(ctx context.Context, req sdk.Request) (sdk.Response, e
 // is tried first is decided by the endpoint — a custom base URL is a gateway, so
 // it gets chat/completions — and the other one is still tried when the first
 // fails before emitting anything, so nothing reaches the caller half-way.
-func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event, error) {
+func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 	req.Stream = true
-	ch := make(chan sdk.Event, 16)
+	ch := make(chan provider.Event, 16)
 	go func() {
 		defer close(ch)
 		first, second := c.streamResponses, c.streamChat
@@ -409,11 +413,11 @@ func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event,
 			return
 		}
 		if emitted > 0 || ctx.Err() != nil {
-			ch <- sdk.Event{Type: sdk.EventError, Err: err}
+			ch <- provider.Event{Type: provider.EventError, Err: err}
 			return
 		}
 		if fallbackErr := second(ctx, req, ch, &emitted); fallbackErr != nil {
-			ch <- sdk.Event{Type: sdk.EventError, Err: fallbackErr}
+			ch <- provider.Event{Type: provider.EventError, Err: fallbackErr}
 		}
 	}()
 	return ch, nil
@@ -426,7 +430,7 @@ func (c *Client) prefersChatCompletions() bool {
 	return !strings.Contains(c.BaseURL, "api.openai.com")
 }
 
-func (c *Client) streamResponses(ctx context.Context, req sdk.Request, ch chan<- sdk.Event, emitted *int) error {
+func (c *Client) streamResponses(ctx context.Context, req provider.Request, ch chan<- provider.Event, emitted *int) error {
 	return internal.SSE(ctx, c.http(), http.MethodPost, c.BaseURL+"/responses", c.headers(), build(req), func(data []byte) error {
 		var e struct {
 			Type  string `json:"type"`
@@ -456,33 +460,33 @@ func (c *Client) streamResponses(ctx context.Context, req sdk.Request, ch chan<-
 		case "ResponsesResponse.output_text.delta":
 			if e.Delta != "" {
 				*emitted++
-				ch <- sdk.Event{Type: sdk.EventText, Text: e.Delta}
+				ch <- provider.Event{Type: provider.EventText, Text: e.Delta}
 			}
 		case "ResponsesResponse.reasoning_summary_text.delta":
 			if e.Delta != "" {
 				*emitted++
-				ch <- sdk.Event{Type: sdk.EventReasoning, Reasoning: &sdk.ReasoningState{Text: e.Delta}}
+				ch <- provider.Event{Type: provider.EventReasoning, Reasoning: &provider.ReasoningState{Text: e.Delta}}
 			}
 		case "ResponsesResponse.function_call_arguments.done":
 			if e.Item.CallID != "" {
 				*emitted++
-				ch <- sdk.Event{Type: sdk.EventToolCall, ToolCall: &sdk.ToolCall{ID: e.Item.CallID, Name: e.Item.Name, Arguments: e.Item.Arguments}}
+				ch <- provider.Event{Type: provider.EventToolCall, ToolCall: &provider.ToolCall{ID: e.Item.CallID, Name: e.Item.Name, Arguments: e.Item.Arguments}}
 			}
 		case "ResponsesResponse.completed":
 			*emitted++
 			// The finished response carries the token counts, so a streamed turn
 			// reports the same usage a non-streamed one does.
-			usage := sdk.Usage{
+			usage := provider.Usage{
 				InputTokens:     e.Response.Usage.InputTokens,
 				OutputTokens:    e.Response.Usage.OutputTokens,
 				TotalTokens:     e.Response.Usage.TotalTokens,
 				CacheReadTokens: e.Response.Usage.InputDetails.Cached,
 			}
-			finished := sdk.Response{
+			finished := provider.Response{
 				Provider: "openai", Model: e.Response.Model, FinishReason: e.Response.Status,
-				Usage: usage, Cache: sdk.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0},
+				Usage: usage, Cache: provider.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0},
 			}
-			ch <- sdk.Event{Type: sdk.EventDone, Response: &finished}
+			ch <- provider.Event{Type: provider.EventDone, Response: &finished}
 		}
 		return nil
 	})
@@ -490,18 +494,18 @@ func (c *Client) streamResponses(ctx context.Context, req sdk.Request, ch chan<-
 
 // streamChat reads the classic OpenAI-compatible SSE dialect: text arrives in
 // choices[].delta.content, tool calls in choices[].delta.tool_calls.
-func (c *Client) streamChat(ctx context.Context, req sdk.Request, ch chan<- sdk.Event, emitted *int) error {
-	calls := map[int]*sdk.ToolCall{}
+func (c *Client) streamChat(ctx context.Context, req provider.Request, ch chan<- provider.Event, emitted *int) error {
+	calls := map[int]*provider.ToolCall{}
 	var order []int
 	// A gateway sends the token counts in a trailing chunk that carries only
 	// `usage`, after the choices are done. It is kept here so the closing event
 	// can carry the real numbers instead of an estimate.
-	var usage sdk.Usage
+	var usage provider.Usage
 	reason, toolTurn := "", false
-	finish := func(reason string) sdk.Event {
-		return sdk.Event{Type: sdk.EventDone, Response: &sdk.Response{
+	finish := func(reason string) provider.Event {
+		return provider.Event{Type: provider.EventDone, Response: &provider.Response{
 			Provider: "openai", FinishReason: reason,
-			Usage: usage, Cache: sdk.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0},
+			Usage: usage, Cache: provider.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0},
 		}}
 	}
 	err := internal.SSE(ctx, c.http(), http.MethodPost, c.BaseURL+"/chat/completions", c.headers(), buildChat(req), func(data []byte) error {
@@ -533,7 +537,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, ch chan<- sdk.
 			return nil
 		}
 		if e.Usage != nil {
-			usage = sdk.Usage{
+			usage = provider.Usage{
 				InputTokens:     e.Usage.PromptTokens,
 				OutputTokens:    e.Usage.CompletionTokens,
 				TotalTokens:     e.Usage.TotalTokens,
@@ -546,12 +550,12 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, ch chan<- sdk.
 		choice := e.Choices[0]
 		if choice.Delta.Content != "" {
 			*emitted++
-			ch <- sdk.Event{Type: sdk.EventText, Text: choice.Delta.Content}
+			ch <- provider.Event{Type: provider.EventText, Text: choice.Delta.Content}
 		}
 		for _, part := range choice.Delta.ToolCalls {
 			call, ok := calls[part.Index]
 			if !ok {
-				call = &sdk.ToolCall{}
+				call = &provider.ToolCall{}
 				calls[part.Index] = call
 				order = append(order, part.Index)
 			}
@@ -567,7 +571,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, ch chan<- sdk.
 			for _, index := range order {
 				call := *calls[index]
 				*emitted++
-				ch <- sdk.Event{Type: sdk.EventToolCall, ToolCall: &call}
+				ch <- provider.Event{Type: provider.EventToolCall, ToolCall: &call}
 			}
 			toolTurn = true
 			return nil

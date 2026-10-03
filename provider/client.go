@@ -1,4 +1,4 @@
-package sdk
+package provider
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func NewRouterClient(router *Router) *RouterClient {
 func (c *RouterClient) RegisterAdapter(provider ProviderID, id AdapterID, p Provider) {
 	c.Adapters[AdapterBinding{Provider: provider, Adapter: id}] = p
 }
-func (c *RouterClient) providerFor(session *Session, model string) (Provider, ModelRoute, error) {
+func (c *RouterClient) providerFor(session Session, model string) (Provider, ModelRoute, error) {
 	provider := session.Config().Provider
 	route, err := c.Router.Resolve(provider, model)
 	if err != nil && strings.Contains(err.Error(), "model catalogue for provider=") {
@@ -100,7 +100,7 @@ func (c *RouterClient) RefreshModels(ctx context.Context, provider ProviderID) e
 	}
 	return c.Router.RefreshModels(ctx, provider, adapter)
 }
-func (c *RouterClient) Generate(ctx context.Context, session *Session, req Request) (Response, error) {
+func (c *RouterClient) Generate(ctx context.Context, session Session, req Request) (Response, error) {
 	cfg := session.Config()
 	model := req.Model
 	if model == "" {
@@ -133,7 +133,7 @@ func (c *RouterClient) Generate(ctx context.Context, session *Session, req Reque
 	}
 	return resp, nil
 }
-func (c *RouterClient) GenerateTurn(ctx context.Context, session *Session, user Turn, req Request) (Response, error) {
+func (c *RouterClient) GenerateTurn(ctx context.Context, session Session, user Turn, req Request) (Response, error) {
 	before := session.History()
 	session.Append(user)
 	req.Messages = session.History()
@@ -145,7 +145,7 @@ func (c *RouterClient) GenerateTurn(ctx context.Context, session *Session, user 
 	commitResponse(session, resp)
 	return resp, nil
 }
-func commitResponse(session *Session, resp Response) {
+func commitResponse(session Session, resp Response) {
 	if len(resp.Content) > 0 || resp.Reasoning != nil {
 		turn := Turn{Role: RoleModel, Content: append([]ContentPart(nil), resp.Content...)}
 		if resp.Reasoning != nil {
@@ -159,7 +159,7 @@ func commitResponse(session *Session, resp Response) {
 		session.Append(Turn{Role: RoleToolCall, ToolCall: &call})
 	}
 }
-func (c *RouterClient) Stream(ctx context.Context, session *Session, req Request) (<-chan Event, error) {
+func (c *RouterClient) Stream(ctx context.Context, session Session, req Request) (<-chan Event, error) {
 	cfg := session.Config()
 	model := req.Model
 	if model == "" {
@@ -179,7 +179,7 @@ func (c *RouterClient) Stream(ctx context.Context, session *Session, req Request
 	cfg.applyGeneration(&req)
 	return c.streamOnce(ctx, session, p, req)
 }
-func (c *RouterClient) streamOnce(ctx context.Context, session *Session, p Provider, req Request) (<-chan Event, error) {
+func (c *RouterClient) streamOnce(ctx context.Context, session Session, p Provider, req Request) (<-chan Event, error) {
 	out := make(chan Event, 16)
 	go func() {
 		defer close(out)
@@ -250,7 +250,7 @@ func (c *RouterClient) streamOnce(ctx context.Context, session *Session, p Provi
 	}()
 	return out, nil
 }
-func (c *RouterClient) StreamTurn(ctx context.Context, session *Session, user Turn, req Request) (<-chan Event, error) {
+func (c *RouterClient) StreamTurn(ctx context.Context, session Session, user Turn, req Request) (<-chan Event, error) {
 	before := session.History()
 	session.Append(user)
 	req.Messages = session.History()
@@ -301,4 +301,20 @@ func (c *RouterClient) StreamTurn(ctx context.Context, session *Session, user Tu
 		session.ReplaceHistory(before)
 	}()
 	return out, nil
+}
+
+// Session is everything a provider client may do to a conversation. The provider
+// layer declares it because it is the consumer: a client must reach the route,
+// the key and the accounting rows without knowing how a conversation is stored.
+// session.Session satisfies this; nothing here depends on that package.
+type Session interface {
+	ID() string
+	Config() SessionConfig
+	APIKey() (string, error)
+	History() []Turn
+	Append(...Turn)
+	ReplaceHistory([]Turn)
+	RepairHistory()
+	RecordRequest(int, Request) (int64, error)
+	RecordResponse(int64, Response, error) error
 }

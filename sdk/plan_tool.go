@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 )
 
@@ -42,11 +43,11 @@ func (e *planningToolExecutor) ConfigureSubAgent(runner SubAgentRunner) {
 	}
 }
 
-func (e *planningToolExecutor) Definitions() []Tool {
+func (e *planningToolExecutor) Definitions() []provider.Tool {
 	if e == nil {
 		return nil
 	}
-	defs := []Tool{{
+	defs := []provider.Tool{{
 		Name: planningToolName, Description: planningToolDescription, InputSchema: map[string]any{
 			"type": "object", "properties": map[string]any{"plan": map[string]any{"type": "string"}}, "required": []string{"plan"},
 		},
@@ -115,38 +116,38 @@ var orchestrationTools = map[string]bool{
 	"delegate_result":  true,
 }
 
-func (e *planningToolExecutor) Execute(ctx context.Context, call ToolCall) ToolResult {
+func (e *planningToolExecutor) Execute(ctx context.Context, call provider.ToolCall) provider.ToolResult {
 	if e == nil {
-		return ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
+		return provider.ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
 	}
 	if orchestrationTools[call.Name] {
 		if e.subAgent == nil {
-			return ToolResult{ID: call.ID, Content: "sub-agent is not configured", IsError: true}
+			return provider.ToolResult{ID: call.ID, Content: "sub-agent is not configured", IsError: true}
 		}
 		return (&subAgentTool{runner: e.subAgent}).Execute(ctx, call)
 	}
 	if call.Name == planningToolName {
 		var input planningToolInput
 		if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
-			return ToolResult{ID: call.ID, Content: "invalid plan tool arguments", IsError: true}
+			return provider.ToolResult{ID: call.ID, Content: "invalid plan tool arguments", IsError: true}
 		}
 		input.Plan = strings.TrimSpace(input.Plan)
 		if input.Plan == "" {
-			return ToolResult{ID: call.ID, Content: "plan is required", IsError: true}
+			return provider.ToolResult{ID: call.ID, Content: "plan is required", IsError: true}
 		}
 		steps := parsePlanSteps(input.Plan)
 		if len(steps) == 0 {
-			return ToolResult{ID: call.ID, Content: "plan must contain at least one step", IsError: true}
+			return provider.ToolResult{ID: call.ID, Content: "plan must contain at least one step", IsError: true}
 		}
 		if e.session != nil {
 			e.session.cleanPlan(steps)
 		}
-		return ToolResult{ID: call.ID, Content: "Checklist recorded with " + fmt.Sprint(len(steps)) + " ordered step(s); statuses are shown in your system prompt every turn. Start with step 1: delegate it and advance only after reviewing the blocking report and accepting verified success with delegate_result."}
+		return provider.ToolResult{ID: call.ID, Content: "Checklist recorded with " + fmt.Sprint(len(steps)) + " ordered step(s); statuses are shown in your system prompt every turn. Start with step 1: delegate it and advance only after reviewing the blocking report and accepting verified success with delegate_result."}
 	}
 	if mainReadToolNames[call.Name] && e.base != nil {
 		return e.base.Execute(ctx, call)
 	}
-	return ToolResult{ID: call.ID, Content: "Main Agent has no write/exec or search tools; read context yourself with read and delegate execution to `delegate_task`", IsError: true}
+	return provider.ToolResult{ID: call.ID, Content: "Main Agent has no write/exec or search tools; read context yourself with read and delegate execution to `delegate_task`", IsError: true}
 }
 
 func parsePlanSteps(plan string) []string {

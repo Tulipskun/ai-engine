@@ -2,12 +2,11 @@ package tools
 
 import (
 	"context"
+	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Tulipskun/ai-engine/sdk"
 )
 
 // safePath is the workspace boundary every surviving tool relies on (REQ-045 /
@@ -85,7 +84,7 @@ func TestReadToolRefusesToEscapeAndReadsWhatItShould(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	ok := registry.Execute(ctx, sdk.ToolCall{ID: "1", Name: "read", Arguments: `{"path":"index.md"}`})
+	ok := registry.Execute(ctx, provider.ToolCall{ID: "1", Name: "read", Arguments: `{"path":"index.md"}`})
 	if ok.IsError {
 		t.Fatalf("reading a file inside the workspace must work: %q", ok.Content)
 	}
@@ -93,7 +92,7 @@ func TestReadToolRefusesToEscapeAndReadsWhatItShould(t *testing.T) {
 		t.Errorf("unexpected content %q", ok.Content)
 	}
 
-	escaped := registry.Execute(ctx, sdk.ToolCall{ID: "2", Name: "read", Arguments: `{"path":"../escape.txt"}`})
+	escaped := registry.Execute(ctx, provider.ToolCall{ID: "2", Name: "read", Arguments: `{"path":"../escape.txt"}`})
 	if !escaped.IsError {
 		t.Error("reading outside the workspace must fail")
 	}
@@ -106,10 +105,10 @@ func TestRegistryRejectsUnknownToolsAndBadArguments(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if res := registry.Execute(ctx, sdk.ToolCall{ID: "1", Name: "nope"}); !res.IsError {
+	if res := registry.Execute(ctx, provider.ToolCall{ID: "1", Name: "nope"}); !res.IsError {
 		t.Error("an unknown tool must be an error, not a silent success")
 	}
-	if res := registry.Execute(ctx, sdk.ToolCall{ID: "2", Name: "read", Arguments: "{not json"}); !res.IsError {
+	if res := registry.Execute(ctx, provider.ToolCall{ID: "2", Name: "read", Arguments: "{not json"}); !res.IsError {
 		t.Error("malformed tool arguments must be an error")
 	}
 }

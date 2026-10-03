@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"net"
 	"net/http"
@@ -589,7 +590,7 @@ func (t *Transport) cancelSubAgent(conn *websocket.Conn, sessionID, jobID string
 	t.broadcast(sessionID, frame)
 }
 
-func responseText(resp *sdk.Response) string {
+func responseText(resp *provider.Response) string {
 	if resp == nil {
 		return ""
 	}
@@ -615,7 +616,7 @@ func FinalText(output sdk.Output) string {
 	return ""
 }
 
-func toolCallView(call *sdk.ToolCall) *ToolCall {
+func toolCallView(call *provider.ToolCall) *ToolCall {
 	if call == nil || call.Name == "" {
 		return nil
 	}
@@ -832,7 +833,7 @@ func (t *Transport) serveWS(w http.ResponseWriter, r *http.Request) {
 		input := sdk.Input{
 			Source:    SourceName,
 			SessionID: sessionID,
-			Turn:      sdk.Turn{Role: sdk.RoleUser, Content: []sdk.ContentPart{{Type: sdk.ContentText, Text: text}}},
+			Turn:      provider.Turn{Role: provider.RoleUser, Content: []provider.ContentPart{{Type: provider.ContentText, Text: text}}},
 			Metadata:  map[string]string{"client_msg_id": in.ClientMsgID},
 		}
 		select {
@@ -899,7 +900,7 @@ func textOf(output sdk.Output) string {
 	return strings.TrimSpace(textOfContent(output.Content))
 }
 
-func textOfContent(parts []sdk.ContentPart) string {
+func textOfContent(parts []provider.ContentPart) string {
 	var b strings.Builder
 	for _, p := range parts {
 		b.WriteString(p.Text)
@@ -907,7 +908,7 @@ func textOfContent(parts []sdk.ContentPart) string {
 	return b.String()
 }
 
-func toContent(parts []sdk.ContentPart) []ContentPart {
+func toContent(parts []provider.ContentPart) []ContentPart {
 	out := make([]ContentPart, 0, len(parts))
 	for _, p := range parts {
 		out = append(out, ContentPart{Type: string(p.Type), Text: p.Text})

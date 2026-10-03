@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"os"
 	"path/filepath"
@@ -142,12 +143,12 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 // modelStore answers the phone's provider/model questions from the live router
 // and keeps the choice on the chat, so a restart does not lose it.
 type modelStore struct {
-	router   *sdk.Router
+	router   *provider.Router
 	client   *d1store.Client
 	sessions *runtime.SessionManager
 	// workingModel is the admin store's verified model per provider, so the
 	// phone's pickers default to a model that is known to answer.
-	workingModel func(sdk.ProviderID) string
+	workingModel func(provider.ProviderID) string
 }
 
 // adminSettings reads the global agent defaults (config:system) from D1.
@@ -218,7 +219,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		}
 		return m.sessionRow(ctx, sessionID)
 	}
-	mainChanged, provider, model, err := sessionRouteChange(choice, m.router)
+	mainChanged, providerLocal, model, err := sessionRouteChange(choice, m.router)
 	if err != nil {
 		return mobiletransport.SessionRow{}, err
 	}
@@ -233,7 +234,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 	subRouteChanged := subProvider != "" || subModel != "" || choice.ClearSub
 	switch {
 	case subProvider != "" && subModel != "":
-		if _, err := m.router.Resolve(sdk.ProviderID(subProvider), subModel); err != nil {
+		if _, err := m.router.Resolve(provider.ProviderID(subProvider), subModel); err != nil {
 			return mobiletransport.SessionRow{}, fmt.Errorf("sub agent %s/%s is not available: %w", subProvider, subModel, err)
 		}
 	case subProvider != "" || subModel != "":
@@ -260,7 +261,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		return m.sessionRow(ctx, sessionID)
 	}
 	if mainChanged {
-		if err := m.client.SetSessionRoute(ctx, sessionID, string(provider), model); err != nil {
+		if err := m.client.SetSessionRoute(ctx, sessionID, string(providerLocal), model); err != nil {
 			return mobiletransport.SessionRow{}, err
 		}
 	}
@@ -276,7 +277,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		if err != nil {
 			log.Printf("mobile: apply model choice to open session %s: %v", sessionID, err)
 		} else {
-			applySessionModel(session, provider, model, m.keysFor(provider))
+			applySessionModel(session, providerLocal, model, m.keysFor(providerLocal))
 		}
 	}
 	return row, nil
@@ -352,16 +353,16 @@ func (m modelStore) ResolveAgentConfig(ctx context.Context, sessionID string) (m
 }
 
 // storedGeneration is the emptiness test on the SDK shape.
-func storedGeneration(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
+func storedGeneration(g provider.GenerationSettings) mobiletransport.GenerationSettings {
 	return fromSDK(g)
 }
 
 // toSDK converts the wire knobs into the SDK's own type, which is what the
 // session setters validate. The conversion is the boundary where "the phone sent
 // nothing" stays nil instead of becoming a zero.
-func toSDK(g mobiletransport.GenerationSettings) sdk.GenerationSettings {
-	return sdk.GenerationSettings{
-		ThinkingLevel:    sdk.ThinkingLevel(strings.TrimSpace(g.ThinkingLevel)),
+func toSDK(g mobiletransport.GenerationSettings) provider.GenerationSettings {
+	return provider.GenerationSettings{
+		ThinkingLevel:    provider.ThinkingLevel(strings.TrimSpace(g.ThinkingLevel)),
 		Temperature:      g.Temperature,
 		TopP:             g.TopP,
 		TopK:             g.TopK,
@@ -375,7 +376,7 @@ func toSDK(g mobiletransport.GenerationSettings) sdk.GenerationSettings {
 
 // fromSDK converts back, so the phone is told exactly what is stored rather than
 // what it last sent.
-func fromSDK(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
+func fromSDK(g provider.GenerationSettings) mobiletransport.GenerationSettings {
 	return mobiletransport.GenerationSettings{
 		ThinkingLevel:    string(g.ThinkingLevel),
 		Temperature:      g.Temperature,
@@ -422,33 +423,33 @@ func (m modelStore) applySessionGeneration(
 // session's main pin alive when the phone saves sub-agent settings; the router
 // fills in the missing half of a half-specified route and rejects a route that
 // cannot run. A request with no main fields at all leaves the pin untouched.
-func sessionRouteChange(choice mobiletransport.ModelChoice, router *sdk.Router) (bool, sdk.ProviderID, string, error) {
-	provider := sdk.ProviderID(choice.Provider)
+func sessionRouteChange(choice mobiletransport.ModelChoice, router *provider.Router) (bool, provider.ProviderID, string, error) {
+	providerLocal := provider.ProviderID(choice.Provider)
 	model := choice.Model
-	if provider == "" && model == "" {
+	if providerLocal == "" && model == "" {
 		return false, "", "", nil
 	}
-	if provider == "" || model == "" {
+	if providerLocal == "" || model == "" {
 		// One side only: fill the other from the router so a phone can send just
 		// the model, or just the provider, without guessing.
-		if provider == "" {
+		if providerLocal == "" {
 			for _, id := range router.ProviderIDs() {
 				if hasModel(router, id, model) {
-					provider = id
+					providerLocal = id
 					break
 				}
 			}
-		} else if models := router.Models(provider); len(models) > 0 {
+		} else if models := router.Models(providerLocal); len(models) > 0 {
 			model = models[0].ID
 		}
 	}
-	if provider == "" || model == "" {
+	if providerLocal == "" || model == "" {
 		return false, "", "", fmt.Errorf("provider %q has no model %q", choice.Provider, choice.Model)
 	}
-	if _, err := router.Resolve(provider, model); err != nil {
-		return false, "", "", fmt.Errorf("%s/%s is not available: %w", provider, model, err)
+	if _, err := router.Resolve(providerLocal, model); err != nil {
+		return false, "", "", fmt.Errorf("%s/%s is not available: %w", providerLocal, model, err)
 	}
-	return true, provider, model, nil
+	return true, providerLocal, model, nil
 }
 
 func (m modelStore) sessionRow(ctx context.Context, sessionID string) (mobiletransport.SessionRow, error) {
@@ -468,16 +469,16 @@ func (m modelStore) sessionRow(ctx context.Context, sessionID string) (mobiletra
 
 // keysFor is the key pool the runtime holds for a provider, so a live session
 // can be switched to the phone's choice with a usable key.
-func (m modelStore) keysFor(provider sdk.ProviderID) *sdk.KeyPool {
-	config, err := m.router.Provider(provider)
+func (m modelStore) keysFor(providerLocal provider.ProviderID) *provider.KeyPool {
+	config, err := m.router.Provider(providerLocal)
 	if err != nil {
 		return nil
 	}
 	return config.Keys
 }
 
-func hasModel(router *sdk.Router, provider sdk.ProviderID, model string) bool {
-	for _, candidate := range router.Models(provider) {
+func hasModel(router *provider.Router, providerLocal provider.ProviderID, model string) bool {
+	for _, candidate := range router.Models(providerLocal) {
 		if candidate.ID == model {
 			return true
 		}
@@ -485,9 +486,9 @@ func hasModel(router *sdk.Router, provider sdk.ProviderID, model string) bool {
 	return false
 }
 
-func applySessionModel(session *sdk.Session, provider sdk.ProviderID, model string, keys *sdk.KeyPool) {
-	if err := session.SetProvider(provider, keys); err != nil {
-		log.Printf("mobile: set provider %s on %s: %v", provider, session.ID(), err)
+func applySessionModel(session *sdk.Session, providerLocal provider.ProviderID, model string, keys *provider.KeyPool) {
+	if err := session.SetProvider(providerLocal, keys); err != nil {
+		log.Printf("mobile: set provider %s on %s: %v", providerLocal, session.ID(), err)
 		return
 	}
 	if err := session.SetModel(model); err != nil {

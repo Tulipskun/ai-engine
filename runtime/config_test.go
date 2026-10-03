@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +20,7 @@ func TestSaveSystemConfigRoundTripsThroughItsLoader(t *testing.T) {
 		SystemPrompt: "be precise",
 		Provider:     "openrouter",
 		Model:        "some/model",
-		Generation:   sdk.GenerationSettings{Temperature: &temperature, ThinkingLevel: sdk.ThinkingMedium},
+		Generation:   provider.GenerationSettings{Temperature: &temperature, ThinkingLevel: provider.ThinkingMedium},
 		SubAgent:     sdk.SubAgentConfig{Enabled: true, Model: "some/model-mini"},
 	}
 	if err := SaveSystemConfig(path, want); err != nil {
@@ -35,7 +36,7 @@ func TestSaveSystemConfigRoundTripsThroughItsLoader(t *testing.T) {
 	if got.Generation.Temperature == nil || *got.Generation.Temperature != temperature {
 		t.Errorf("temperature did not survive the round trip: %+v", got.Generation.Temperature)
 	}
-	if got.Generation.ThinkingLevel != sdk.ThinkingMedium {
+	if got.Generation.ThinkingLevel != provider.ThinkingMedium {
 		t.Errorf("thinking level did not survive: %q", got.Generation.ThinkingLevel)
 	}
 	if !got.SubAgent.Enabled || got.SubAgent.Model != "some/model-mini" {
@@ -119,10 +120,10 @@ func TestAdapterForProviderRequiresAnExplicitChoiceForUnknownNames(t *testing.T)
 	if _, err := adapterForProvider("my-gateway", ""); err == nil {
 		t.Error("an unknown provider name must require an explicit adapter")
 	}
-	if got, err := adapterForProvider("my-gateway", "gemini"); err != nil || got != sdk.AdapterGemini {
+	if got, err := adapterForProvider("my-gateway", "gemini"); err != nil || got != provider.AdapterGemini {
 		t.Errorf("an explicit adapter must win, got %q err %v", got, err)
 	}
-	if got, err := adapterForProvider("openrouter", ""); err != nil || got != sdk.AdapterOpenAI {
+	if got, err := adapterForProvider("openrouter", ""); err != nil || got != provider.AdapterOpenAI {
 		t.Errorf("openrouter must infer the openai adapter, got %q err %v", got, err)
 	}
 }

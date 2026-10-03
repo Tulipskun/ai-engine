@@ -32,9 +32,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/internal"
-	"github.com/Tulipskun/ai-engine/sdk/providers/openai"
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/provider/internal"
+	"github.com/Tulipskun/ai-engine/provider/openai"
 )
 
 const (
@@ -127,16 +127,20 @@ type Client struct {
 func New(apiKey string) *Client {
 	return &Client{BaseURL: DefaultBaseURL, APIKey: apiKey, HTTP: http.DefaultClient}
 }
-func (c *Client) WithAPIKey(key string) sdk.Provider      { cp := *c; cp.APIKey = key; return &cp }
-func (c *Client) WithBaseURL(baseURL string) sdk.Provider { cp := *c; cp.BaseURL = baseURL; return &cp }
-func (c *Client) WithHeaders(headers map[string]string) sdk.Provider {
+func (c *Client) WithAPIKey(key string) provider.Provider { cp := *c; cp.APIKey = key; return &cp }
+func (c *Client) WithBaseURL(baseURL string) provider.Provider {
+	cp := *c
+	cp.BaseURL = baseURL
+	return &cp
+}
+func (c *Client) WithHeaders(headers map[string]string) provider.Provider {
 	cp := *c
 	cp.Headers = cloneHeaders(headers)
 	return &cp
 }
 func (c *Client) Name() string { return "opencode" }
 
-func (c *Client) sessionID(req sdk.Request) string { return SessionIDFor(req.SessionID) }
+func (c *Client) sessionID(req provider.Request) string { return SessionIDFor(req.SessionID) }
 
 // project labels the caller the way the client does, so a request that arrives
 // with no configured project still carries the header.
@@ -192,7 +196,7 @@ func FreeTierHeaders(sessionID string) map[string]string {
 	}
 }
 
-func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, error) {
+func (c *Client) ListModels(ctx context.Context, apiKey string) ([]provider.Model, error) {
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -207,12 +211,12 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 	if err := internal.DoJSON(ctx, c.http(), http.MethodGet, c.BaseURL+"/models", c.headers(SessionIDFor("")), nil, &r); err != nil {
 		return nil, err
 	}
-	models := make([]sdk.Model, 0, len(r.Data))
+	models := make([]provider.Model, 0, len(r.Data))
 	for _, item := range r.Data {
 		if item.ID == "" {
 			continue
 		}
-		models = append(models, sdk.Model{ID: item.ID, Name: item.ID, SupportsStreaming: true, SupportsTemperature: true})
+		models = append(models, provider.Model{ID: item.ID, Name: item.ID, SupportsStreaming: true, SupportsTemperature: true})
 	}
 	return models, nil
 }
@@ -255,17 +259,17 @@ var toolAlias = []struct{ client, ours string }{
 // clientTools returns the tool set the OpenCode client would send, using the
 // session's own definition for every tool that maps onto a client name (so the
 // arguments stay ours) and a minimal definition for the rest.
-func clientTools(tools []sdk.Tool) []sdk.Tool {
-	ours := make(map[string]sdk.Tool, len(tools))
+func clientTools(tools []provider.Tool) []provider.Tool {
+	ours := make(map[string]provider.Tool, len(tools))
 	for _, t := range tools {
 		if _, seen := ours[t.Name]; !seen {
 			ours[t.Name] = t
 		}
 	}
 	used := make(map[string]bool, len(clientToolNames))
-	out := make([]sdk.Tool, 0, len(clientToolNames))
+	out := make([]provider.Tool, 0, len(clientToolNames))
 	for _, name := range clientToolNames {
-		tool := sdk.Tool{
+		tool := provider.Tool{
 			Name:        name,
 			Description: clientToolDescriptions[name],
 			InputSchema: map[string]any{
@@ -306,7 +310,7 @@ var clientToolDescriptions = map[string]string{
 // oursToolForName translates a tool name that came back from the provider into
 // the tool this session actually has. An empty result is a call the session
 // cannot run, which the agent reports as an unknown tool rather than guessing.
-func oursToolForName(name string, tools []sdk.Tool) string {
+func oursToolForName(name string, tools []provider.Tool) string {
 	have := make(map[string]bool, len(tools))
 	for _, t := range tools {
 		have[t.Name] = true
@@ -329,7 +333,7 @@ var errEmptyTurn = errors.New("opencode: the turn produced no output")
 // toolNameBack is the safe form of oursToolForName for a call that has to be
 // reported either way: a call whose tool the session does not have keeps the
 // name the provider used, so the agent can tell the model it is unknown.
-func toolNameBack(name string, tools []sdk.Tool) string {
+func toolNameBack(name string, tools []provider.Tool) string {
 	if ours := oursToolForName(name, tools); ours != "" {
 		return ours
 	}
@@ -342,7 +346,7 @@ func toolNameBack(name string, tools []sdk.Tool) string {
 // any of this — a 43-character system prompt with the client's tool set is
 // served — so this is how the agent learns the project's rules, not a way
 // around the 403.
-func withInstructions(req sdk.Request) string {
+func withInstructions(req provider.Request) string {
 	if len(req.Instructions) == 0 {
 		return req.SystemPrompt
 	}
@@ -365,7 +369,7 @@ func withInstructions(req sdk.Request) string {
 // /chat/completions: the same messages and tools plus tool_choice, the token
 // budget and stream_options. Zen's free tier rejects a request that is missing
 // the client's shape, so the extras are not decoration.
-func buildChatRequest(req sdk.Request) map[string]any {
+func buildChatRequest(req provider.Request) map[string]any {
 	agent := req
 	agent.Tools = clientTools(req.Tools)
 	agent.SystemPrompt = withInstructions(req)
@@ -386,7 +390,7 @@ func buildChatRequest(req sdk.Request) map[string]any {
 // system prompt as the leading developer input item instead of the
 // "instructions" field: Zen rejects large instructions payloads, while the
 // real opencode client sends its system prompt as input items.
-func buildResponsesRequest(req sdk.Request) map[string]any {
+func buildResponsesRequest(req provider.Request) map[string]any {
 	agent := req
 	agent.Tools = clientTools(req.Tools)
 	agent.SystemPrompt = withInstructions(req)
@@ -401,17 +405,17 @@ func buildResponsesRequest(req sdk.Request) map[string]any {
 	return b
 }
 
-func (c *Client) Generate(ctx context.Context, req sdk.Request) (sdk.Response, error) {
+func (c *Client) Generate(ctx context.Context, req provider.Request) (provider.Response, error) {
 	sid := c.sessionID(req)
 	var r openai.ResponsesResponse
 	if err := internal.DoJSON(ctx, c.http(), http.MethodPost, c.BaseURL+"/responses", c.headers(sid), buildResponsesRequest(req), &r); err == nil {
 		return openai.ParseResponsesResponse(r), nil
 	} else if !shouldTryChat(err) {
-		return sdk.Response{}, err
+		return provider.Response{}, err
 	}
 	var chat openai.ChatResponse
 	if chatErr := internal.DoJSON(ctx, c.http(), http.MethodPost, c.BaseURL+"/chat/completions", c.headers(sid), buildChatRequest(req), &chat); chatErr != nil {
-		return sdk.Response{}, chatErr
+		return provider.Response{}, chatErr
 	}
 	return openai.ParseChatResponse(chat), nil
 }
@@ -448,9 +452,9 @@ func shouldTryChat(err error) bool {
 	return false
 }
 
-func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event, error) {
+func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 	req.Stream = true
-	ch := make(chan sdk.Event, 16)
+	ch := make(chan provider.Event, 16)
 	go func() {
 		defer close(ch)
 		sid := c.sessionID(req)
@@ -458,17 +462,17 @@ func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event,
 		if err := c.streamResponses(ctx, req, sid, ch, &emitted); err == nil {
 			return
 		} else if emitted || !shouldTryChat(err) {
-			ch <- sdk.Event{Type: sdk.EventError, Err: err}
+			ch <- provider.Event{Type: provider.EventError, Err: err}
 			return
 		}
 		if err := c.streamChat(ctx, req, sid, ch, &emitted); err != nil {
-			ch <- sdk.Event{Type: sdk.EventError, Err: err}
+			ch <- provider.Event{Type: provider.EventError, Err: err}
 		}
 	}()
 	return ch, nil
 }
 
-func (c *Client) streamResponses(ctx context.Context, req sdk.Request, sid string, ch chan<- sdk.Event, emitted *bool) error {
+func (c *Client) streamResponses(ctx context.Context, req provider.Request, sid string, ch chan<- provider.Event, emitted *bool) error {
 	mark := func() {
 		if emitted != nil {
 			*emitted = true
@@ -504,27 +508,27 @@ func (c *Client) streamResponses(ctx context.Context, req sdk.Request, sid strin
 		case "response.output_text.delta":
 			if e.Delta != "" {
 				mark()
-				ch <- sdk.Event{Type: sdk.EventText, Text: e.Delta}
+				ch <- provider.Event{Type: provider.EventText, Text: e.Delta}
 			}
 		case "response.reasoning_summary_text.delta":
 			if e.Delta != "" {
 				mark()
-				ch <- sdk.Event{Type: sdk.EventReasoning, Reasoning: &sdk.ReasoningState{Text: e.Delta}}
+				ch <- provider.Event{Type: provider.EventReasoning, Reasoning: &provider.ReasoningState{Text: e.Delta}}
 			}
 		case "response.function_call_arguments.done":
 			if e.Item.CallID != "" {
 				mark()
-				ch <- sdk.Event{Type: sdk.EventToolCall, ToolCall: &sdk.ToolCall{ID: e.Item.CallID, Name: toolNameBack(e.Item.Name, req.Tools), Arguments: e.Item.Arguments}}
+				ch <- provider.Event{Type: provider.EventToolCall, ToolCall: &provider.ToolCall{ID: e.Item.CallID, Name: toolNameBack(e.Item.Name, req.Tools), Arguments: e.Item.Arguments}}
 			}
 		case "response.completed":
 			completed = true
 			mark()
 			// The closing event carries the token counts, so a streamed turn
 			// reports the same usage a non-streamed one does.
-			ch <- sdk.Event{Type: sdk.EventDone, Response: &sdk.Response{
+			ch <- provider.Event{Type: provider.EventDone, Response: &provider.Response{
 				Model:        e.Response.Model,
 				FinishReason: e.Response.Status,
-				Usage: sdk.Usage{
+				Usage: provider.Usage{
 					InputTokens:     e.Response.Usage.InputTokens,
 					OutputTokens:    e.Response.Usage.OutputTokens,
 					TotalTokens:     e.Response.Usage.TotalTokens,
@@ -546,7 +550,7 @@ func (c *Client) streamResponses(ctx context.Context, req sdk.Request, sid strin
 	return nil
 }
 
-func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch chan<- sdk.Event, emitted *bool) error {
+func (c *Client) streamChat(ctx context.Context, req provider.Request, sid string, ch chan<- provider.Event, emitted *bool) error {
 	type toolState struct {
 		id, name, args string
 	}
@@ -555,7 +559,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch
 	// `usage`, after the closing choice. The closing `done` goes out first (the
 	// turn may continue with tool calls), and the real counts follow on a second
 	// `done`, which is the one the agent keeps.
-	var usage sdk.Usage
+	var usage provider.Usage
 	doneSent := false
 	mark := func() {
 		if emitted != nil {
@@ -591,7 +595,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch
 			return nil
 		}
 		if e.Usage != nil {
-			usage = sdk.Usage{
+			usage = provider.Usage{
 				InputTokens:     e.Usage.PromptTokens,
 				OutputTokens:    e.Usage.CompletionTokens,
 				TotalTokens:     e.Usage.TotalTokens,
@@ -601,7 +605,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch
 		for _, choice := range e.Choices {
 			if choice.Delta.Content != "" {
 				mark()
-				ch <- sdk.Event{Type: sdk.EventText, Text: choice.Delta.Content}
+				ch <- provider.Event{Type: provider.EventText, Text: choice.Delta.Content}
 			}
 			for _, call := range choice.Delta.ToolCalls {
 				st := tools[call.Index]
@@ -621,7 +625,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch
 				for _, st := range tools {
 					if st.name != "" {
 						mark()
-						ch <- sdk.Event{Type: sdk.EventToolCall, ToolCall: &sdk.ToolCall{ID: st.id, Name: toolNameBack(st.name, req.Tools), Arguments: st.args}}
+						ch <- provider.Event{Type: provider.EventToolCall, ToolCall: &provider.ToolCall{ID: st.id, Name: toolNameBack(st.name, req.Tools), Arguments: st.args}}
 					}
 				}
 				tools = map[int]*toolState{}
@@ -629,7 +633,7 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch
 			if choice.FinishReason != "" {
 				doneSent = true
 				mark()
-				ch <- sdk.Event{Type: sdk.EventDone}
+				ch <- provider.Event{Type: provider.EventDone}
 			}
 		}
 		return nil
@@ -639,9 +643,9 @@ func (c *Client) streamChat(ctx context.Context, req sdk.Request, sid string, ch
 	}
 	// The token counts ride out on their own `done` so a turn that continues
 	// with tool calls is not closed twice for the same stream.
-	if usage != (sdk.Usage{}) {
+	if usage != (provider.Usage{}) {
 		mark()
-		ch <- sdk.Event{Type: sdk.EventDone, Response: &sdk.Response{Usage: usage}}
+		ch <- provider.Event{Type: provider.EventDone, Response: &provider.Response{Usage: usage}}
 	} else if !doneSent {
 		// The stream closed without a closing choice, so the turn produced
 		// nothing; reporting it as done would hide a free-tier hiccup.

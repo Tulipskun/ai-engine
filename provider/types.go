@@ -1,4 +1,4 @@
-package sdk
+package provider
 
 import (
 	"context"
@@ -249,25 +249,25 @@ func (c SessionConfig) applyGeneration(req *Request) {
 		req.ThinkingLevel = c.ThinkingLevel
 	}
 	if req.Temperature == nil {
-		req.Temperature = cloneFloat(c.Temperature)
+		req.Temperature = CloneFloat(c.Temperature)
 	}
 	if req.TopP == nil {
-		req.TopP = cloneFloat(c.TopP)
+		req.TopP = CloneFloat(c.TopP)
 	}
 	if req.TopK == nil {
-		req.TopK = cloneFloat(c.TopK)
+		req.TopK = CloneFloat(c.TopK)
 	}
 	if len(req.StopSequences) == 0 && len(c.StopSequences) > 0 {
 		req.StopSequences = append([]string(nil), c.StopSequences...)
 	}
 	if req.PresencePenalty == nil {
-		req.PresencePenalty = cloneFloat(c.PresencePenalty)
+		req.PresencePenalty = CloneFloat(c.PresencePenalty)
 	}
 	if req.FrequencyPenalty == nil {
-		req.FrequencyPenalty = cloneFloat(c.FrequencyPenalty)
+		req.FrequencyPenalty = CloneFloat(c.FrequencyPenalty)
 	}
 	if req.Seed == nil {
-		req.Seed = cloneInt64(c.Seed)
+		req.Seed = CloneInt64(c.Seed)
 	}
 	if req.MaxOutputTokens == 0 {
 		req.MaxOutputTokens = c.MaxOutputTokens
@@ -294,14 +294,14 @@ func (c SessionConfig) Generation() GenerationSettings {
 // parent, so it runs on the same knobs unless its own config says otherwise —
 // and listing them here once is what stops a newly added knob from being left
 // behind on the worker path (CHANGE-077).
-func (c *SessionConfig) inheritGeneration(parent SessionConfig) {
+func (c *SessionConfig) InheritGeneration(parent SessionConfig) {
 	c.ThinkingLevel = parent.ThinkingLevel
-	c.Temperature = cloneFloat(parent.Temperature)
-	c.TopP = cloneFloat(parent.TopP)
-	c.TopK = cloneFloat(parent.TopK)
-	c.PresencePenalty = cloneFloat(parent.PresencePenalty)
-	c.FrequencyPenalty = cloneFloat(parent.FrequencyPenalty)
-	c.Seed = cloneInt64(parent.Seed)
+	c.Temperature = CloneFloat(parent.Temperature)
+	c.TopP = CloneFloat(parent.TopP)
+	c.TopK = CloneFloat(parent.TopK)
+	c.PresencePenalty = CloneFloat(parent.PresencePenalty)
+	c.FrequencyPenalty = CloneFloat(parent.FrequencyPenalty)
+	c.Seed = CloneInt64(parent.Seed)
 	if parent.StopSequences != nil {
 		c.StopSequences = append([]string(nil), parent.StopSequences...)
 	} else {
@@ -315,21 +315,21 @@ func (c *SessionConfig) inheritGeneration(parent SessionConfig) {
 // clone returns a copy that shares no pointer and no slice backing with c, so
 // a caller holding one can never reach back into the session's own settings.
 // Every knob is a pointer or a slice, so a shallow copy would alias them all.
-func (c SessionConfig) clone() SessionConfig {
+func (c SessionConfig) Clone() SessionConfig {
 	out := c
-	out.Temperature = cloneFloat(c.Temperature)
-	out.TopP = cloneFloat(c.TopP)
-	out.TopK = cloneFloat(c.TopK)
-	out.PresencePenalty = cloneFloat(c.PresencePenalty)
-	out.FrequencyPenalty = cloneFloat(c.FrequencyPenalty)
-	out.Seed = cloneInt64(c.Seed)
+	out.Temperature = CloneFloat(c.Temperature)
+	out.TopP = CloneFloat(c.TopP)
+	out.TopK = CloneFloat(c.TopK)
+	out.PresencePenalty = CloneFloat(c.PresencePenalty)
+	out.FrequencyPenalty = CloneFloat(c.FrequencyPenalty)
+	out.Seed = CloneInt64(c.Seed)
 	if c.StopSequences != nil {
 		out.StopSequences = append([]string(nil), c.StopSequences...)
 	}
 	return out
 }
 
-func cloneFloat(v *float64) *float64 {
+func CloneFloat(v *float64) *float64 {
 	if v == nil {
 		return nil
 	}
@@ -337,7 +337,7 @@ func cloneFloat(v *float64) *float64 {
 	return &c
 }
 
-func cloneInt64(v *int64) *int64 {
+func CloneInt64(v *int64) *int64 {
 	if v == nil {
 		return nil
 	}

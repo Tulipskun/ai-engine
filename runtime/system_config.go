@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"strings"
 
@@ -22,15 +23,15 @@ type SystemConfig struct {
 	Model        string `json:"model"`
 	// Generation holds the main agent's knobs. max_output_tokens stays a sibling
 	// field because it predates this and is read by the boot path directly.
-	Generation      sdk.GenerationSettings `json:"generation"`
-	MaxOutputTokens int                    `json:"max_output_tokens"`
-	Workspace       string                 `json:"workspace"`
-	SubAgent        SubAgentConfig         `json:"sub_agent"`
+	Generation      provider.GenerationSettings `json:"generation"`
+	MaxOutputTokens int                         `json:"max_output_tokens"`
+	Workspace       string                      `json:"workspace"`
+	SubAgent        SubAgentConfig              `json:"sub_agent"`
 }
 
 // Settings returns the generation knobs as they are stored, so the boot path can
 // seed a session from this without knowing how the file spelled them.
-func (c SystemConfig) Settings() sdk.GenerationSettings { return c.Generation }
+func (c SystemConfig) Settings() provider.GenerationSettings { return c.Generation }
 
 // MaxOutputTokensFor returns the cap that applies to the main agent, preferring
 // the generation block and falling back to the older top-level field.
@@ -81,34 +82,34 @@ func LoadSystemConfig(path string) (SystemConfig, error) {
 // validateGeneration holds a hand-edited config to the same bounds a value
 // arriving over the wire is held to, so the two cannot disagree about what is
 // allowed (CHANGE-077).
-func validateGeneration(path string, g sdk.GenerationSettings) error {
+func validateGeneration(path string, g provider.GenerationSettings) error {
 	if g.Temperature != nil {
-		if err := sdk.ValidateTemperature(*g.Temperature); err != nil {
+		if err := provider.ValidateTemperature(*g.Temperature); err != nil {
 			return fmt.Errorf("system: decode config %q: %w", path, err)
 		}
 	}
 	if g.TopP != nil {
-		if err := sdk.ValidateTopP(*g.TopP); err != nil {
+		if err := provider.ValidateTopP(*g.TopP); err != nil {
 			return fmt.Errorf("system: decode config %q: %w", path, err)
 		}
 	}
 	if g.TopK != nil {
-		if err := sdk.ValidateTopK(*g.TopK); err != nil {
+		if err := provider.ValidateTopK(*g.TopK); err != nil {
 			return fmt.Errorf("system: decode config %q: %w", path, err)
 		}
 	}
 	if g.PresencePenalty != nil {
-		if err := sdk.ValidatePenalty("presence_penalty", *g.PresencePenalty); err != nil {
+		if err := provider.ValidatePenalty("presence_penalty", *g.PresencePenalty); err != nil {
 			return fmt.Errorf("system: decode config %q: %w", path, err)
 		}
 	}
 	if g.FrequencyPenalty != nil {
-		if err := sdk.ValidatePenalty("frequency_penalty", *g.FrequencyPenalty); err != nil {
+		if err := provider.ValidatePenalty("frequency_penalty", *g.FrequencyPenalty); err != nil {
 			return fmt.Errorf("system: decode config %q: %w", path, err)
 		}
 	}
 	if g.ThinkingLevel != "" {
-		if err := sdk.ValidateThinkingLevel(g.ThinkingLevel); err != nil {
+		if err := provider.ValidateThinkingLevel(g.ThinkingLevel); err != nil {
 			return fmt.Errorf("system: decode config %q: %w", path, err)
 		}
 	}
@@ -119,7 +120,7 @@ func validateGeneration(path string, g sdk.GenerationSettings) error {
 }
 
 func validateSubAgentGeneration(path string, sub sdk.SubAgentConfig) error {
-	return validateGeneration(path, sdk.GenerationSettings{
+	return validateGeneration(path, provider.GenerationSettings{
 		ThinkingLevel:   sub.ThinkingLevel,
 		Temperature:     sub.Temperature,
 		MaxOutputTokens: sub.MaxOutputTokens,

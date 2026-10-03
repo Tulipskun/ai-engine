@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/Tulipskun/ai-engine/sdk"
 )
 
 const DefaultProviderConfigPath = "config/provider.json"
@@ -106,17 +105,17 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func (c ProviderFileConfig) ProviderConfigs() ([]sdk.ProviderConfig, error) {
-	configs := make([]sdk.ProviderConfig, 0, len(c.Providers))
+func (c ProviderFileConfig) ProviderConfigs() ([]provider.ProviderConfig, error) {
+	configs := make([]provider.ProviderConfig, 0, len(c.Providers))
 	for _, p := range c.Providers {
 		adapter, err := adapterForProvider(p.Name, p.Adapter)
 		if err != nil {
 			return nil, err
 		}
-		configs = append(configs, sdk.ProviderConfig{
-			ID:       sdk.ProviderID(p.Name),
+		configs = append(configs, provider.ProviderConfig{
+			ID:       provider.ProviderID(p.Name),
 			BaseURL:  p.HTTPEndpoint,
-			Keys:     sdk.NewKeyPool(p.APIKeys...),
+			Keys:     provider.NewKeyPool(p.APIKeys...),
 			Adapter:  adapter,
 			FreeOnly: p.FreeOnly,
 			Headers:  cloneStringMap(p.Headers),
@@ -125,28 +124,28 @@ func (c ProviderFileConfig) ProviderConfigs() ([]sdk.ProviderConfig, error) {
 	return configs, nil
 }
 
-func adapterForProvider(name, explicit string) (sdk.AdapterID, error) {
+func adapterForProvider(name, explicit string) (provider.AdapterID, error) {
 	if explicit != "" {
 		switch strings.ToLower(strings.TrimSpace(explicit)) {
-		case string(sdk.AdapterOpenAI):
-			return sdk.AdapterOpenAI, nil
-		case string(sdk.AdapterAnthropic):
-			return sdk.AdapterAnthropic, nil
-		case string(sdk.AdapterGemini):
-			return sdk.AdapterGemini, nil
-		case string(sdk.AdapterOpenCode):
-			return sdk.AdapterOpenCode, nil
+		case string(provider.AdapterOpenAI):
+			return provider.AdapterOpenAI, nil
+		case string(provider.AdapterAnthropic):
+			return provider.AdapterAnthropic, nil
+		case string(provider.AdapterGemini):
+			return provider.AdapterGemini, nil
+		case string(provider.AdapterOpenCode):
+			return provider.AdapterOpenCode, nil
 		default:
 			return "", fmt.Errorf("runtime: provider %q has unsupported adapter %q", name, explicit)
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "openai", "openrouter":
-		return sdk.AdapterOpenAI, nil
+		return provider.AdapterOpenAI, nil
 	case "anthropic", "opencode":
-		return sdk.AdapterAnthropic, nil
+		return provider.AdapterAnthropic, nil
 	case "gemini", "google":
-		return sdk.AdapterGemini, nil
+		return provider.AdapterGemini, nil
 	default:
 		return "", fmt.Errorf("runtime: provider %q requires an explicit adapter", name)
 	}

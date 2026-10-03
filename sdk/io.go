@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"time"
 )
@@ -10,7 +11,7 @@ import (
 type Input struct {
 	Source    string
 	SessionID string
-	Turn      Turn
+	Turn      provider.Turn
 	Metadata  map[string]string
 }
 
@@ -18,8 +19,8 @@ type Input struct {
 type Output struct {
 	Source    string
 	SessionID string
-	Content   []ContentPart
-	Response  Response
+	Content   []provider.ContentPart
+	Response  provider.Response
 	Trace     *TraceEvent
 	Metadata  map[string]string
 }

@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 	"time"
 )
@@ -22,15 +23,15 @@ const (
 )
 
 type TraceEvent struct {
-	Stage      TraceStage    `json:"stage"`
-	Message    string        `json:"message,omitempty"`
-	Response   *Response     `json:"response,omitempty"`
-	ToolCall   *ToolCall     `json:"tool_call,omitempty"`
-	ToolResult *ToolResult   `json:"tool_result,omitempty"`
-	Text       string        `json:"text,omitempty"`
-	Err        error         `json:"-"`
-	RetryAfter time.Duration `json:"retry_after,omitempty"`
-	Elapsed    time.Duration `json:"elapsed,omitempty"`
+	Stage      TraceStage           `json:"stage"`
+	Message    string               `json:"message,omitempty"`
+	Response   *provider.Response   `json:"response,omitempty"`
+	ToolCall   *provider.ToolCall   `json:"tool_call,omitempty"`
+	ToolResult *provider.ToolResult `json:"tool_result,omitempty"`
+	Text       string               `json:"text,omitempty"`
+	Err        error                `json:"-"`
+	RetryAfter time.Duration        `json:"retry_after,omitempty"`
+	Elapsed    time.Duration        `json:"elapsed,omitempty"`
 
 	// RequestStartedMs is the Unix millisecond timestamp of the moment the
 	// provider request that produced this event was sent. ProviderAcceptedMs
@@ -95,10 +96,10 @@ func TraceMessage(event TraceEvent) string {
 	}
 }
 
-func ResponseText(resp Response) string {
+func ResponseText(resp provider.Response) string {
 	var b strings.Builder
 	for _, part := range resp.Content {
-		if part.Type == ContentText {
+		if part.Type == provider.ContentText {
 			b.WriteString(part.Text)
 		}
 	}

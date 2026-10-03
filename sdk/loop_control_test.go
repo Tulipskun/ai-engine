@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 	"testing"
 )
@@ -52,11 +53,11 @@ func TestLoopControlReadStallCapsConsecutiveReads(t *testing.T) {
 
 func TestLoopControlCapsBashOutputPayload(t *testing.T) {
 	tracker := &loopControlTracker{}
-	small := ToolResult{Content: strings.Repeat("x", LoopControlMaxBashOutputBytes-1)}
+	small := provider.ToolResult{Content: strings.Repeat("x", LoopControlMaxBashOutputBytes-1)}
 	if err := tracker.noteResult("bash", small); err != nil {
 		t.Fatalf("payload under the cap must pass: %v", err)
 	}
-	big := ToolResult{Content: strings.Repeat("x", LoopControlMaxBashOutputBytes+1)}
+	big := provider.ToolResult{Content: strings.Repeat("x", LoopControlMaxBashOutputBytes+1)}
 	if err := tracker.noteResult("bash", big); !errors.Is(err, ErrLoopControlBashOutputTooLarge) {
 		t.Fatalf("oversized bash result must fail, got %v", err)
 	}

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/internal"
-	"github.com/Tulipskun/ai-engine/sdk/providers/openai"
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/provider/internal"
+	"github.com/Tulipskun/ai-engine/provider/openai"
 )
 
 type Client struct {
@@ -24,14 +24,18 @@ type Client struct {
 func New(apiKey string) *Client {
 	return &Client{BaseURL: "https://generativelanguage.googleapis.com/v1beta", APIKey: apiKey, HTTP: http.DefaultClient}
 }
-func (c *Client) WithAPIKey(key string) sdk.Provider      { cp := *c; cp.APIKey = key; return &cp }
-func (c *Client) WithBaseURL(baseURL string) sdk.Provider { cp := *c; cp.BaseURL = baseURL; return &cp }
-func (c *Client) WithHeaders(headers map[string]string) sdk.Provider {
+func (c *Client) WithAPIKey(key string) provider.Provider { cp := *c; cp.APIKey = key; return &cp }
+func (c *Client) WithBaseURL(baseURL string) provider.Provider {
+	cp := *c
+	cp.BaseURL = baseURL
+	return &cp
+}
+func (c *Client) WithHeaders(headers map[string]string) provider.Provider {
 	cp := *c
 	cp.Headers = cloneHeaders(headers)
 	return &cp
 }
-func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, error) {
+func (c *Client) ListModels(ctx context.Context, apiKey string) ([]provider.Model, error) {
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -53,7 +57,7 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 	if err := internal.DoJSON(ctx, c.http(), http.MethodGet, u, nil, nil, &r); err != nil {
 		return nil, err
 	}
-	models := make([]sdk.Model, 0, len(r.Models))
+	models := make([]provider.Model, 0, len(r.Models))
 	for _, item := range r.Models {
 		id := strings.TrimPrefix(item.Name, "models/")
 		if id == "" {
@@ -70,15 +74,15 @@ func (c *Client) ListModels(ctx context.Context, apiKey string) ([]sdk.Model, er
 		if name == "" {
 			name = id
 		}
-		models = append(models, sdk.Model{ID: id, Name: name, SupportsStreaming: streaming, SupportsTools: true, SupportsThinking: true, SupportsTemperature: true})
+		models = append(models, provider.Model{ID: id, Name: name, SupportsStreaming: streaming, SupportsTools: true, SupportsThinking: true, SupportsTemperature: true})
 	}
 	return models, nil
 }
 func (c *Client) Name() string { return "gemini" }
 
 // build converts via the central OpenAI Responses interface:
-// sdk.Request -> OpenAI canonical -> Gemini native.
-func build(req sdk.Request) map[string]any {
+// provider.Request -> OpenAI canonical -> Gemini native.
+func build(req provider.Request) map[string]any {
 	canonical := openai.BuildResponsesRequest(req)
 	// top_k and stop are not OpenAI parameters so they never entered the
 	// canonical map, but this map is only an intermediate on the way to Gemini,
@@ -154,7 +158,7 @@ func BuildFromOpenAI(openAIReq map[string]any) map[string]any {
 	if stop := openai.StopSequencesOf(openAIReq); len(stop) > 0 {
 		cfg["stopSequences"] = stop
 	}
-	if effort := openai.ReasoningEffortOf(openAIReq); effort != "" && effort != string(sdk.ThinkingNone) {
+	if effort := openai.ReasoningEffortOf(openAIReq); effort != "" && effort != string(provider.ThinkingNone) {
 		cfg["thinkingConfig"] = map[string]any{"thinkingLevel": effort}
 	}
 	if len(cfg) > 0 {
@@ -213,17 +217,17 @@ func (c *Client) endpoint(model string, stream bool) string {
 	}
 	return u
 }
-func (c *Client) Generate(ctx context.Context, req sdk.Request) (sdk.Response, error) {
+func (c *Client) Generate(ctx context.Context, req provider.Request) (provider.Response, error) {
 	var r response
 	if err := internal.DoJSON(ctx, c.http(), http.MethodPost, c.endpoint(req.Model, false), c.headers(), build(req), &r); err != nil {
-		return sdk.Response{}, err
+		return provider.Response{}, err
 	}
 	return ToOpenAIResponse(r, req.Model), nil
 }
-func parse(r response, model string) sdk.Response { return ToOpenAIResponse(r, model) }
-func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event, error) {
+func parse(r response, model string) provider.Response { return ToOpenAIResponse(r, model) }
+func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 	req.Stream = true
-	ch := make(chan sdk.Event, 16)
+	ch := make(chan provider.Event, 16)
 	go func() {
 		defer close(ch)
 		err := internal.SSE(ctx, c.http(), http.MethodPost, c.endpoint(req.Model, true), c.headers(), build(req), func(data []byte) error {
@@ -237,23 +241,23 @@ func (c *Client) Stream(ctx context.Context, req sdk.Request) (<-chan sdk.Event,
 			for _, p := range r.Candidates[0].Content.Parts {
 				if p.Text != "" {
 					if p.Thought {
-						ch <- sdk.Event{Type: sdk.EventReasoning, Reasoning: &sdk.ReasoningState{Text: p.Text}}
+						ch <- provider.Event{Type: provider.EventReasoning, Reasoning: &provider.ReasoningState{Text: p.Text}}
 					} else {
-						ch <- sdk.Event{Type: sdk.EventText, Text: p.Text}
+						ch <- provider.Event{Type: provider.EventText, Text: p.Text}
 					}
 				}
 				if p.FunctionCall != nil {
 					a, _ := json.Marshal(p.FunctionCall.Args)
-					ch <- sdk.Event{Type: sdk.EventToolCall, ToolCall: &sdk.ToolCall{ID: fmt.Sprintf("gemini-%s", p.FunctionCall.Name), Name: p.FunctionCall.Name, Arguments: string(a)}}
+					ch <- provider.Event{Type: provider.EventToolCall, ToolCall: &provider.ToolCall{ID: fmt.Sprintf("gemini-%s", p.FunctionCall.Name), Name: p.FunctionCall.Name, Arguments: string(a)}}
 				}
 			}
 			if r.Candidates[0].FinishReason != "" {
-				ch <- sdk.Event{Type: sdk.EventDone}
+				ch <- provider.Event{Type: provider.EventDone}
 			}
 			return nil
 		})
 		if err != nil {
-			ch <- sdk.Event{Type: sdk.EventError, Err: err}
+			ch <- provider.Event{Type: provider.EventError, Err: err}
 		}
 	}()
 	return ch, nil
@@ -279,13 +283,13 @@ func cloneHeaders(in map[string]string) map[string]string {
 	return out
 }
 
-// ToOpenAIResponse converts a native Gemini response into sdk.Response
+// ToOpenAIResponse converts a native Gemini response into provider.Response
 // through the central OpenAI Responses shape.
-func ToOpenAIResponse(r response, model string) sdk.Response {
+func ToOpenAIResponse(r response, model string) provider.Response {
 	// promptTokenCount already contains cachedContentTokenCount, and
 	// candidatesTokenCount does not contain thoughtsTokenCount, so the answer
 	// text count stays r.Usage.Output and the thinking is reported beside it.
-	usage := sdk.Usage{
+	usage := provider.Usage{
 		InputTokens:        r.Usage.Prompt,
 		OutputTokens:       r.Usage.Output,
 		TotalTokens:        r.Usage.Total,
@@ -296,17 +300,17 @@ func ToOpenAIResponse(r response, model string) sdk.Response {
 	if len(r.Candidates) == 0 {
 		out := openai.ResponsesResponseFromParts(model, "", nil, nil, nil, usage)
 		out.Provider = "gemini"
-		out.Cache = sdk.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}
+		out.Cache = provider.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}
 		return out
 	}
 	var texts []string
-	var calls []sdk.ToolCall
-	var reasoning *sdk.ReasoningState
+	var calls []provider.ToolCall
+	var reasoning *provider.ReasoningState
 	for _, p := range r.Candidates[0].Content.Parts {
 		if p.Text != "" {
 			if p.Thought {
 				if reasoning == nil {
-					reasoning = &sdk.ReasoningState{}
+					reasoning = &provider.ReasoningState{}
 				}
 				reasoning.Text += p.Text
 			} else {
@@ -315,12 +319,12 @@ func ToOpenAIResponse(r response, model string) sdk.Response {
 		}
 		if p.FunctionCall != nil {
 			a, _ := json.Marshal(p.FunctionCall.Args)
-			calls = append(calls, sdk.ToolCall{ID: fmt.Sprintf("gemini-%s-%d", p.FunctionCall.Name, len(calls)+1), Name: p.FunctionCall.Name, Arguments: string(a)})
+			calls = append(calls, provider.ToolCall{ID: fmt.Sprintf("gemini-%s-%d", p.FunctionCall.Name, len(calls)+1), Name: p.FunctionCall.Name, Arguments: string(a)})
 		}
 	}
 	out := openai.ResponsesResponseFromParts(model, r.Candidates[0].FinishReason, texts, calls, reasoning, usage)
 	out.Provider = "gemini"
-	out.Cache = sdk.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}
+	out.Cache = provider.CacheInfo{Layer: "provider", Hit: usage.CacheReadTokens > 0}
 	return out
 }
 func (c *Client) http() *http.Client {

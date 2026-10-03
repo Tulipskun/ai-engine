@@ -7,11 +7,11 @@ import (
 	"log"
 	"sync"
 
-	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/anthropic"
-	"github.com/Tulipskun/ai-engine/sdk/providers/gemini"
-	"github.com/Tulipskun/ai-engine/sdk/providers/openai"
-	"github.com/Tulipskun/ai-engine/sdk/providers/opencode"
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/provider/anthropic"
+	"github.com/Tulipskun/ai-engine/provider/gemini"
+	"github.com/Tulipskun/ai-engine/provider/openai"
+	"github.com/Tulipskun/ai-engine/provider/opencode"
 )
 
 type ProviderManager struct {
@@ -38,7 +38,7 @@ func (m *ProviderManager) Rt() *Runtime {
 }
 
 // RefreshProvider re-runs model discovery for one provider.
-func (m *ProviderManager) RefreshProvider(ctx context.Context, id sdk.ProviderID) error {
+func (m *ProviderManager) RefreshProvider(ctx context.Context, id provider.ProviderID) error {
 	if m == nil || m.rt == nil {
 		return errors.New("runtime: provider manager is not initialized")
 	}
@@ -50,7 +50,7 @@ func (m *ProviderManager) RefreshProvider(ctx context.Context, id sdk.ProviderID
 // D1 only after a phone hands over the token, which happens long after boot, so
 // a runtime loaded at start would otherwise keep an empty provider set for its
 // whole life (REQ-046(4), REQ-047).
-func (m *ProviderManager) Reload(ctx context.Context) ([]sdk.ProviderConfig, error) {
+func (m *ProviderManager) Reload(ctx context.Context) ([]provider.ProviderConfig, error) {
 	if m == nil || m.rt == nil || m.rt.Router == nil || m.rt.Client == nil {
 		return nil, errors.New("runtime: provider manager is not initialized")
 	}
@@ -64,7 +64,7 @@ func (m *ProviderManager) Reload(ctx context.Context) ([]sdk.ProviderConfig, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	loaded := make([]sdk.ProviderConfig, 0, len(configs))
+	loaded := make([]provider.ProviderConfig, 0, len(configs))
 	for _, config := range configs {
 		if err := m.ensureAdapter(config.ID, config.Adapter); err != nil {
 			return nil, err
@@ -84,26 +84,26 @@ func (m *ProviderManager) Reload(ctx context.Context) ([]sdk.ProviderConfig, err
 	return loaded, nil
 }
 
-func (m *ProviderManager) ensureAdapter(provider sdk.ProviderID, id sdk.AdapterID) error {
-	if _, ok := m.rt.Client.Adapters[sdk.AdapterBinding{Provider: provider, Adapter: id}]; ok {
+func (m *ProviderManager) ensureAdapter(providerLocal provider.ProviderID, id provider.AdapterID) error {
+	if _, ok := m.rt.Client.Adapters[provider.AdapterBinding{Provider: providerLocal, Adapter: id}]; ok {
 		return nil
 	}
 	switch id {
-	case sdk.AdapterOpenAI:
-		m.rt.Client.RegisterAdapter(provider, id, openai.New(""))
-	case sdk.AdapterAnthropic:
-		m.rt.Client.RegisterAdapter(provider, id, anthropic.New(""))
-	case sdk.AdapterGemini:
-		m.rt.Client.RegisterAdapter(provider, id, gemini.New(""))
-	case sdk.AdapterOpenCode:
-		m.rt.Client.RegisterAdapter(provider, id, opencode.New(""))
+	case provider.AdapterOpenAI:
+		m.rt.Client.RegisterAdapter(providerLocal, id, openai.New(""))
+	case provider.AdapterAnthropic:
+		m.rt.Client.RegisterAdapter(providerLocal, id, anthropic.New(""))
+	case provider.AdapterGemini:
+		m.rt.Client.RegisterAdapter(providerLocal, id, gemini.New(""))
+	case provider.AdapterOpenCode:
+		m.rt.Client.RegisterAdapter(providerLocal, id, opencode.New(""))
 	default:
 		return fmt.Errorf("runtime: unsupported adapter %q", id)
 	}
 	return nil
 }
-func providerIDs(configs []sdk.ProviderConfig) []sdk.ProviderID {
-	ids := make([]sdk.ProviderID, 0, len(configs))
+func providerIDs(configs []provider.ProviderConfig) []provider.ProviderID {
+	ids := make([]provider.ProviderID, 0, len(configs))
 	for _, config := range configs {
 		ids = append(ids, config.ID)
 	}

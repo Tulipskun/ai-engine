@@ -3,6 +3,7 @@ package sdk
 import (
 	"encoding/base64"
 	"errors"
+	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,7 +12,7 @@ import (
 
 type SessionInfo struct {
 	ID        string
-	Provider  ProviderID
+	Provider  provider.ProviderID
 	Model     string
 	UpdatedAt time.Time
 	TurnCount int

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"os"
 	"os/signal"
@@ -109,8 +110,8 @@ func run(ctx context.Context) error {
 	// The boot session carries the main agent's generation settings. Without this
 	// the settings lived in the config file but nothing ever copied them onto a
 	// session, so a hand-edited config changed nothing (CHANGE-077).
-	baseSession := sdk.SessionConfig{
-		Provider:         sdk.ProviderID(providerID),
+	baseSession := provider.SessionConfig{
+		Provider:         provider.ProviderID(providerID),
 		Model:            modelID,
 		ThinkingLevel:    systemConfig.Settings().ThinkingLevel,
 		Temperature:      systemConfig.Settings().Temperature,
@@ -146,9 +147,9 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	providerKeys := make(map[sdk.ProviderID]*sdk.KeyPool, len(rt.ProviderConfigs))
-	for _, provider := range rt.ProviderConfigs {
-		providerKeys[provider.ID] = provider.Keys
+	providerKeys := make(map[provider.ProviderID]*provider.KeyPool, len(rt.ProviderConfigs))
+	for _, providerLocal := range rt.ProviderConfigs {
+		providerKeys[providerLocal.ID] = providerLocal.Keys
 	}
 	var sources []sdk.InputSource
 	var displays []sdk.Display
@@ -170,7 +171,7 @@ func run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		sessions.AdoptProviders(configs, sdk.SessionConfig{Provider: sdk.ProviderID(providerID), Model: modelID})
+		sessions.AdoptProviders(configs, provider.SessionConfig{Provider: provider.ProviderID(providerID), Model: modelID})
 		log.Printf("providers reloaded after D1 hydrate: %d", len(configs))
 		return nil
 	})
@@ -187,18 +188,18 @@ func run(ctx context.Context) error {
 	// store writes config/provider and config/system, which is what the daemon
 	// hydrates from, so a restart keeps the choices.
 	admin := newAdminStore(state, mobileRT.client, providerManager, &providerFile, sessions, agent,
-		sdk.SessionConfig{Provider: sdk.ProviderID(providerID), Model: modelID})
+		provider.SessionConfig{Provider: provider.ProviderID(providerID), Model: modelID})
 	// The catalogue's default model is the one a health check actually got an
 	// answer from, so the phone does not hand the user a model the key refuses.
 	models.workingModel = admin.WorkingModel
 	mobileRT.transport.SetAdminStore(admin)
 	mobileRT.applySystemRoutes = admin.RefreshRoutesFromDisk
-	sessions.SetSessionDefaults(func(ctx context.Context, sessionID string) (sdk.ProviderID, string, bool) {
+	sessions.SetSessionDefaults(func(ctx context.Context, sessionID string) (provider.ProviderID, string, bool) {
 		choice, ok, err := models.SessionModel(ctx, sessionID)
 		if err != nil || !ok {
 			return "", "", false
 		}
-		return sdk.ProviderID(choice.Provider), choice.Model, true
+		return provider.ProviderID(choice.Provider), choice.Model, true
 	})
 	stop, err := mobileRT.transport.StartHTTP(ctx, transportConfig.Mobile.Listen)
 	if err != nil {
@@ -224,10 +225,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	loop = &sdk.HarnessLoop{Agent: agent, Source: sdk.ChannelInputSource{Inputs: inputs}, ResolveSession: sessions.Resolve, BuildRequest: func(context.Context, sdk.Input, *sdk.Session) (sdk.Request, error) {
+	loop = &sdk.HarnessLoop{Agent: agent, Source: sdk.ChannelInputSource{Inputs: inputs}, ResolveSession: sessions.Resolve, BuildRequest: func(context.Context, sdk.Input, *sdk.Session) (provider.Request, error) {
 		// Stream every turn: the phone renders deltas as they arrive, and a
 		// provider that cannot stream still answers through the same path.
-		return sdk.Request{
+		return provider.Request{
 			SystemPrompt:    systemPrompt(agent),
 			Instructions:    instructionFiles(),
 			MaxOutputTokens: maxOutputTokens,

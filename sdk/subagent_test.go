@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"github.com/Tulipskun/ai-engine/provider"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,8 +16,8 @@ func newTestSession(t *testing.T, id string) *Session {
 	t.Helper()
 	session, err := OpenSession(
 		filepath.Join(t.TempDir(), "session.db"),
-		SessionConfig{ID: id, Provider: "test-provider", Model: "test-model"},
-		NewKeyPool("test-key"),
+		provider.SessionConfig{ID: id, Provider: "test-provider", Model: "test-model"},
+		provider.NewKeyPool("test-key"),
 	)
 	if err != nil {
 		t.Fatalf("open session %s: %v", id, err)

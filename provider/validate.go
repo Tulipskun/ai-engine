@@ -1,4 +1,4 @@
-package sdk
+package provider
 
 import (
 	"errors"
@@ -69,4 +69,13 @@ func checkRange(name string, v, lo, hi float64) error {
 		return fmt.Errorf("sdk: %s must be between %g and %g, got %g", name, lo, hi, v)
 	}
 	return nil
+}
+
+func validThinkingLevel(level ThinkingLevel) bool {
+	switch level {
+	case ThinkingNone, ThinkingLow, ThinkingMedium, ThinkingHigh:
+		return true
+	default:
+		return false
+	}
 }

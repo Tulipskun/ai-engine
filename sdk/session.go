@@ -1,185 +1,14 @@
 package sdk
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
+
+	"github.com/Tulipskun/ai-engine/provider"
 )
-
-type routeKey struct {
-	provider ProviderID
-	model    string
-}
-type Router struct {
-	mu           sync.RWMutex
-	routes       map[routeKey]ModelRoute
-	providers    map[ProviderID]ProviderConfig
-	catalogs     map[ProviderID][]Model
-	catalogReady map[ProviderID]bool
-}
-
-func NewRouter() *Router {
-	return &Router{routes: make(map[routeKey]ModelRoute), providers: make(map[ProviderID]ProviderConfig), catalogs: make(map[ProviderID][]Model), catalogReady: make(map[ProviderID]bool)}
-}
-func (r *Router) RegisterProvider(config ProviderConfig) {
-	if config.ID == "" || config.Adapter == "" {
-		panic("sdk: invalid provider config")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.providers[config.ID] = config
-	delete(r.catalogs, config.ID)
-	r.catalogReady[config.ID] = false
-}
-func (r *Router) Provider(provider ProviderID) (ProviderConfig, error) {
-	r.mu.RLock()
-	config, ok := r.providers[provider]
-	r.mu.RUnlock()
-	if !ok {
-		return ProviderConfig{}, fmt.Errorf("sdk: provider %q is not registered", provider)
-	}
-	return config, nil
-}
-func (r *Router) Register(route ModelRoute) {
-	if route.Provider == "" || route.Model == "" || route.Adapter == "" {
-		panic("sdk: invalid model route")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.routes[routeKey{route.Provider, route.Model}] = route
-}
-func (r *Router) RefreshModels(ctx context.Context, provider ProviderID, adapter Provider) error {
-	config, err := r.Provider(provider)
-	if err != nil {
-		return err
-	}
-	lister, ok := adapter.(ModelLister)
-	if !ok {
-		return fmt.Errorf("sdk: adapter %q does not support model discovery", config.Adapter)
-	}
-	if config.Keys == nil {
-		return errors.New("sdk: provider has no key pool")
-	}
-	key, err := config.Keys.Current()
-	if err != nil {
-		return err
-	}
-	p := adapter
-	if kp, ok := p.(KeyedProvider); ok {
-		p = kp.WithAPIKey(key)
-	}
-	if ep, ok := p.(EndpointProvider); ok && config.BaseURL != "" {
-		p = ep.WithBaseURL(config.BaseURL)
-	}
-	if len(config.Headers) > 0 {
-		if hp, ok := p.(HeaderedProvider); ok {
-			p = hp.WithHeaders(config.Headers)
-		}
-	}
-	lister, ok = p.(ModelLister)
-	if !ok {
-		return fmt.Errorf("sdk: configured adapter %q cannot discover models after configuration", config.Adapter)
-	}
-	models, err := lister.ListModels(ctx, key)
-	if err != nil {
-		return err
-	}
-	clean := make([]Model, 0, len(models))
-	seen := make(map[string]struct{})
-	for _, model := range models {
-		if model.ID == "" {
-			continue
-		}
-		if _, exists := seen[model.ID]; exists {
-			continue
-		}
-		seen[model.ID] = struct{}{}
-		clean = append(clean, ModelCapabilities(config.Adapter, model))
-	}
-	clean = filterFreeModels(clean, config.FreeOnly)
-	r.mu.Lock()
-	r.catalogs[provider] = clean
-	r.catalogReady[provider] = true
-	r.mu.Unlock()
-	return nil
-}
-func filterFreeModels(models []Model, freeOnly bool) []Model {
-	if !freeOnly {
-		return models
-	}
-	out := make([]Model, 0, len(models))
-	for _, model := range models {
-		if isFreeModelID(model.ID) {
-			out = append(out, model)
-		}
-	}
-	return out
-}
-
-// isFreeModelID matches the free-tier naming of the gateways in use:
-// "-free" suffix (opencode Zen), ":free" suffix (OpenRouter-style,
-// e.g. NousResearch) and "free/" prefix used by some providers.
-func isFreeModelID(id string) bool {
-	id = strings.ToLower(strings.TrimSpace(id))
-	if id == "" {
-		return false
-	}
-	return strings.HasSuffix(id, "-free") || strings.HasSuffix(id, ":free") || strings.HasPrefix(id, "free/")
-}
-
-// ProviderIDs lists the registered providers, so a caller can offer the whole
-// catalogue (the phone's provider picker) without tracking it separately.
-func (r *Router) ProviderIDs() []ProviderID {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]ProviderID, 0, len(r.providers))
-	for id := range r.providers {
-		out = append(out, id)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
-}
-
-func (r *Router) Models(provider ProviderID) []Model {
-	r.mu.RLock()
-	models := append([]Model(nil), r.catalogs[provider]...)
-	r.mu.RUnlock()
-	return models
-}
-func (r *Router) Resolve(provider ProviderID, model string) (ModelRoute, error) {
-	if provider == "" {
-		return ModelRoute{}, errors.New("sdk: provider is required")
-	}
-	if model == "" {
-		return ModelRoute{}, errors.New("sdk: model is required")
-	}
-	r.mu.RLock()
-	config, providerOK := r.providers[provider]
-	ready := r.catalogReady[provider]
-	route, staticOK := r.routes[routeKey{provider, model}]
-	if ready {
-		for _, discovered := range r.catalogs[provider] {
-			if discovered.ID == model {
-				r.mu.RUnlock()
-				return ModelRoute{Provider: provider, Model: model, Adapter: config.Adapter}, nil
-			}
-		}
-		r.mu.RUnlock()
-		return ModelRoute{}, fmt.Errorf("sdk: model %q is not available for provider=%q", model, provider)
-	}
-	r.mu.RUnlock()
-	if staticOK {
-		return route, nil
-	}
-	if providerOK {
-		return ModelRoute{}, fmt.Errorf("sdk: model catalogue for provider=%q has not been refreshed", provider)
-	}
-	return ModelRoute{}, fmt.Errorf("sdk: no route for provider=%q model=%q", provider, model)
-}
 
 type PlanStep struct {
 	Index  int
@@ -194,18 +23,18 @@ type PlanState struct {
 
 type Session struct {
 	mu        sync.RWMutex
-	config    SessionConfig
-	keys      *KeyPool
-	history   []Turn
+	config    provider.SessionConfig
+	keys      *provider.KeyPool
+	history   []provider.Turn
 	store     *SessionDB
 	plan      PlanState
 	activeJob string
 }
 
-func NewSession(config SessionConfig, keys *KeyPool) *Session {
+func NewSession(config provider.SessionConfig, keys *provider.KeyPool) *Session {
 	return &Session{config: config, keys: keys}
 }
-func OpenSession(path string, config SessionConfig, keys *KeyPool) (*Session, error) {
+func OpenSession(path string, config provider.SessionConfig, keys *provider.KeyPool) (*Session, error) {
 	store, err := OpenSessionDB(path)
 	if err != nil {
 		return nil, err
@@ -237,10 +66,10 @@ func (s *Session) Close() error {
 	return store.Close()
 }
 func (s *Session) ID() string { return s.config.ID }
-func (s *Session) Config() SessionConfig {
+func (s *Session) Config() provider.SessionConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.config.clone()
+	return s.config.Clone()
 }
 
 // keyPoolSize reports how many keys this session could try. A session with no
@@ -280,7 +109,11 @@ func (s *Session) RotateAPIKey() (string, error) {
 	s.config.KeyIndex = s.keys.IndexOfCurrent()
 	return key, nil
 }
-func (s *Session) History() []Turn { s.mu.RLock(); defer s.mu.RUnlock(); return cloneTurns(s.history) }
+func (s *Session) History() []provider.Turn {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneTurns(s.history)
+}
 func (s *Session) cleanPlan(steps []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -427,7 +260,7 @@ func (s *Session) acceptSubAgent(job *subAgentJob) error {
 	return nil
 }
 
-func (s *Session) Append(turns ...Turn) {
+func (s *Session) Append(turns ...provider.Turn) {
 	if len(turns) == 0 {
 		return
 	}
@@ -443,7 +276,7 @@ func (s *Session) Append(turns ...Turn) {
 		}
 	}
 }
-func (s *Session) ReplaceHistory(turns []Turn) {
+func (s *Session) ReplaceHistory(turns []provider.Turn) {
 	repaired := repairTurns(cloneTurns(turns))
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -457,7 +290,7 @@ func (s *Session) ReplaceHistory(turns []Turn) {
 	}
 }
 func (s *Session) RepairHistory() { s.ReplaceHistory(s.History()) }
-func (s *Session) RecordRequest(attempt int, req Request) (int64, error) {
+func (s *Session) RecordRequest(attempt int, req provider.Request) (int64, error) {
 	s.mu.RLock()
 	store, id := s.store, s.config.ID
 	s.mu.RUnlock()
@@ -466,7 +299,7 @@ func (s *Session) RecordRequest(attempt int, req Request) (int64, error) {
 	}
 	return store.RecordRequest(id, attempt, req)
 }
-func (s *Session) RecordResponse(requestID int64, resp Response, err error) error {
+func (s *Session) RecordResponse(requestID int64, resp provider.Response, err error) error {
 	s.mu.RLock()
 	store := s.store
 	s.mu.RUnlock()
@@ -478,25 +311,25 @@ func (s *Session) RecordResponse(requestID int64, resp Response, err error) erro
 
 // LoadUsage reports the session's cumulative token/cache totals persisted in
 // its database. A session without a store has no totals to report.
-func (s *Session) LoadUsage() (Usage, error) {
+func (s *Session) LoadUsage() (provider.Usage, error) {
 	s.mu.RLock()
 	store, id := s.store, s.config.ID
 	s.mu.RUnlock()
 	if store == nil {
-		return Usage{}, nil
+		return provider.Usage{}, nil
 	}
 	return store.LoadUsage(id)
 }
-func cloneTurns(in []Turn) []Turn {
-	out := make([]Turn, len(in))
+func cloneTurns(in []provider.Turn) []provider.Turn {
+	out := make([]provider.Turn, len(in))
 	copy(out, in)
 	for i := range out {
 		out[i] = cloneTurn(out[i])
 	}
 	return out
 }
-func cloneTurn(turn Turn) Turn {
-	turn.Content = append([]ContentPart(nil), turn.Content...)
+func cloneTurn(turn provider.Turn) provider.Turn {
+	turn.Content = append([]provider.ContentPart(nil), turn.Content...)
 	if turn.ToolCall != nil {
 		v := *turn.ToolCall
 		turn.ToolCall = &v
@@ -511,20 +344,20 @@ func cloneTurn(turn Turn) Turn {
 	}
 	return turn
 }
-func repairTurns(in []Turn) []Turn {
-	out := make([]Turn, 0, len(in))
+func repairTurns(in []provider.Turn) []provider.Turn {
+	out := make([]provider.Turn, 0, len(in))
 	pending := make(map[string]bool)
 	for _, turn := range in {
 		switch turn.Role {
-		case RoleUser, RoleModel:
+		case provider.RoleUser, provider.RoleModel:
 			out = append(out, turn)
-		case RoleToolCall:
+		case provider.RoleToolCall:
 			if turn.ToolCall == nil || turn.ToolCall.ID == "" || turn.ToolCall.Name == "" || pending[turn.ToolCall.ID] {
 				continue
 			}
 			pending[turn.ToolCall.ID] = true
 			out = append(out, turn)
-		case RoleToolResult:
+		case provider.RoleToolResult:
 			if turn.ToolResult == nil || turn.ToolResult.ID == "" || !pending[turn.ToolResult.ID] {
 				continue
 			}
@@ -537,10 +370,24 @@ func repairTurns(in []Turn) []Turn {
 	}
 	final := out[:0]
 	for _, turn := range out {
-		if turn.Role == RoleToolCall && pending[turn.ToolCall.ID] {
+		if turn.Role == provider.RoleToolCall && pending[turn.ToolCall.ID] {
 			continue
 		}
 		final = append(final, turn)
 	}
 	return final
+}
+func commitResponse(session *Session, resp provider.Response) {
+	if len(resp.Content) > 0 || resp.Reasoning != nil {
+		turn := provider.Turn{Role: provider.RoleModel, Content: append([]provider.ContentPart(nil), resp.Content...)}
+		if resp.Reasoning != nil {
+			r := *resp.Reasoning
+			turn.Reasoning = &r
+		}
+		session.Append(turn)
+	}
+	for _, call := range resp.ToolCalls {
+		call := call
+		session.Append(provider.Turn{Role: provider.RoleToolCall, ToolCall: &call})
+	}
 }

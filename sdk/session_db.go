@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,7 +233,7 @@ func boolInt(v bool) int {
 	return 0
 }
 
-func (s *SessionDB) SaveSession(config SessionConfig) error {
+func (s *SessionDB) SaveSession(config provider.SessionConfig) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -276,10 +277,10 @@ func (s *SessionDB) SaveSession(config SessionConfig) error {
 	return err
 }
 
-func (s *SessionDB) LoadSession(sessionID string) (SessionConfig, error) {
+func (s *SessionDB) LoadSession(sessionID string) (provider.SessionConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var config SessionConfig
+	var config provider.SessionConfig
 	var temperature, topP, topK, presence, frequency sql.NullFloat64
 	var stopSequences sql.NullString
 	var seed sql.NullInt64
@@ -307,7 +308,7 @@ func (s *SessionDB) LoadSession(sessionID string) (SessionConfig, error) {
 		&workspace,
 	)
 	if err != nil {
-		return SessionConfig{}, err
+		return provider.SessionConfig{}, err
 	}
 	if temperature.Valid {
 		v := temperature.Float64
@@ -336,17 +337,17 @@ func (s *SessionDB) LoadSession(sessionID string) (SessionConfig, error) {
 		v := seed.Int64
 		config.Seed = &v
 	}
-	config.AgentMode = AgentMode(agentMode)
+	config.AgentMode = provider.AgentMode(agentMode)
 	if workspace.Valid {
 		config.Workspace = workspace.String
 	}
 	return config, nil
 }
 
-func (s *SessionDB) LoadUsage(sessionID string) (Usage, error) {
+func (s *SessionDB) LoadUsage(sessionID string) (provider.Usage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var usage Usage
+	var usage provider.Usage
 	err := s.db.QueryRow(`
 		SELECT input_tokens,output_tokens,total_tokens,cache_read_tokens,cache_write_tokens
 		FROM sessions WHERE id=?`, sessionID).Scan(
@@ -357,12 +358,12 @@ func (s *SessionDB) LoadUsage(sessionID string) (Usage, error) {
 		&usage.CacheWriteTokens,
 	)
 	if err != nil {
-		return Usage{}, err
+		return provider.Usage{}, err
 	}
 	return usage, nil
 }
 
-func (s *SessionDB) LoadHistory(sessionID string) ([]Turn, error) {
+func (s *SessionDB) LoadHistory(sessionID string) ([]provider.Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`
@@ -373,34 +374,34 @@ func (s *SessionDB) LoadHistory(sessionID string) ([]Turn, error) {
 	}
 	defer rows.Close()
 
-	var out []Turn
+	var out []provider.Turn
 	for rows.Next() {
 		var role, contentJSON string
 		var callJSON, resultJSON, reasoningJSON sql.NullString
 		if err := rows.Scan(&role, &contentJSON, &callJSON, &resultJSON, &reasoningJSON); err != nil {
 			return nil, err
 		}
-		var content []ContentPart
+		var content []provider.ContentPart
 		if err := json.Unmarshal([]byte(contentJSON), &content); err != nil {
 			return nil, err
 		}
-		turn := Turn{Role: Role(role), Content: content}
+		turn := provider.Turn{Role: provider.Role(role), Content: content}
 		if callJSON.Valid && callJSON.String != "" {
-			var call ToolCall
+			var call provider.ToolCall
 			if err := json.Unmarshal([]byte(callJSON.String), &call); err != nil {
 				return nil, err
 			}
 			turn.ToolCall = &call
 		}
 		if resultJSON.Valid && resultJSON.String != "" {
-			var result ToolResult
+			var result provider.ToolResult
 			if err := json.Unmarshal([]byte(resultJSON.String), &result); err != nil {
 				return nil, err
 			}
 			turn.ToolResult = &result
 		}
 		if reasoningJSON.Valid && reasoningJSON.String != "" {
-			var reasoning ReasoningState
+			var reasoning provider.ReasoningState
 			if err := json.Unmarshal([]byte(reasoningJSON.String), &reasoning); err != nil {
 				return nil, err
 			}
@@ -414,7 +415,7 @@ func (s *SessionDB) LoadHistory(sessionID string) ([]Turn, error) {
 	return out, nil
 }
 
-func (s *SessionDB) AppendTurns(sessionID string, turns []Turn, startSeq int) error {
+func (s *SessionDB) AppendTurns(sessionID string, turns []provider.Turn, startSeq int) error {
 	if len(turns) == 0 {
 		return nil
 	}
@@ -477,7 +478,7 @@ func (s *SessionDB) AppendTurns(sessionID string, turns []Turn, startSeq int) er
 	return tx.Commit()
 }
 
-func (s *SessionDB) ReplaceTurns(sessionID string, turns []Turn) error {
+func (s *SessionDB) ReplaceTurns(sessionID string, turns []provider.Turn) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -540,7 +541,7 @@ func (s *SessionDB) ReplaceTurns(sessionID string, turns []Turn) error {
 	return tx.Commit()
 }
 
-func (s *SessionDB) RecordRequest(sessionID string, attempt int, req Request) (int64, error) {
+func (s *SessionDB) RecordRequest(sessionID string, attempt int, req provider.Request) (int64, error) {
 	tools, err := json.Marshal(req.Tools)
 	if err != nil {
 		return 0, err
@@ -603,7 +604,7 @@ func (s *SessionDB) RecordRequest(sessionID string, attempt int, req Request) (i
 	return res.LastInsertId()
 }
 
-func (s *SessionDB) RecordResponse(requestID int64, resp Response, err error) error {
+func (s *SessionDB) RecordResponse(requestID int64, resp provider.Response, err error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, txErr := s.db.Begin()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,7 @@ type SubAgentConfig struct {
 	Model                string
 	MaxOutputTokens      int
 	Temperature          *float64
-	ThinkingLevel        ThinkingLevel
+	ThinkingLevel        provider.ThinkingLevel
 	SystemPrompt         string
 	Workspace            string
 	ReportEveryToolCalls int
@@ -533,11 +534,11 @@ func (m *subAgentManager) progressLocked(job *subAgentJob) string {
 	return strings.TrimSpace(b.String())
 }
 
-func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Response, error) {
+func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (provider.Response, error) {
 	parentCfg := job.parent.Config()
-	provider := strings.TrimSpace(m.cfg.Provider)
-	if provider == "" {
-		provider = string(parentCfg.Provider)
+	providerLocal := strings.TrimSpace(m.cfg.Provider)
+	if providerLocal == "" {
+		providerLocal = string(parentCfg.Provider)
 	}
 	model := strings.TrimSpace(m.cfg.Model)
 	if model == "" {
@@ -549,32 +550,32 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Resp
 	}
 	ctx = WithWorkspace(ctx, workspace)
 	keys := job.parent.keys
-	if provider != string(parentCfg.Provider) {
-		config, err := m.agent.Client.Router.Provider(ProviderID(provider))
+	if providerLocal != string(parentCfg.Provider) {
+		config, err := m.agent.Client.Router.Provider(provider.ProviderID(providerLocal))
 		if err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 		keys = config.Keys
 		if keys == nil {
-			return Response{}, fmt.Errorf("sdk: sub-agent provider %q has no key pool", provider)
+			return provider.Response{}, fmt.Errorf("sdk: sub-agent provider %q has no key pool", providerLocal)
 		}
 	}
 	workerID := job.workerID
 	store := job.parent.store
 	if store == nil {
-		return Response{}, errors.New("sdk: parent session is not persistent")
+		return provider.Response{}, errors.New("sdk: parent session is not persistent")
 	}
-	workerCfg := SessionConfig{ID: workerID, Provider: ProviderID(provider), Model: model, KeyIndex: parentCfg.KeyIndex, Workspace: workspace}
-	workerCfg.inheritGeneration(parentCfg)
+	workerCfg := provider.SessionConfig{ID: workerID, Provider: provider.ProviderID(providerLocal), Model: model, KeyIndex: parentCfg.KeyIndex, Workspace: workspace}
+	workerCfg.InheritGeneration(parentCfg)
 	workerCfg.ThinkingLevel = chooseThinking(m.cfg.ThinkingLevel, parentCfg.ThinkingLevel)
 	worker, err := OpenSession(SessionDBPath(store.Dir(), workerID), workerCfg, keys)
 	if err != nil {
-		return Response{}, err
+		return provider.Response{}, err
 	}
 	defer worker.Close()
 	if m.cfg.Temperature != nil {
 		if err := worker.SetTemperature(*m.cfg.Temperature); err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 	}
 	prompt := strings.TrimSpace(m.cfg.SystemPrompt)
@@ -588,7 +589,7 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Resp
 		prompt += "\n\nInvestigation mode: inspect the repository and return only the requested findings. Do not modify the project unless the investigation task explicitly requires it."
 	}
 	workerAgent := &Agent{Client: m.agent.Client, Tools: m.agent.Tools, MaxRetries: m.agent.MaxRetries, DisablePlanning: true, SubAgentConfig: SubAgentConfig{Enabled: false}}
-	req := Request{Provider: ProviderID(provider), Model: model, SystemPrompt: prompt}
+	req := provider.Request{Provider: provider.ProviderID(providerLocal), Model: model, SystemPrompt: prompt}
 	if m.cfg.MaxOutputTokens > 0 {
 		req.MaxOutputTokens = m.cfg.MaxOutputTokens
 	}
@@ -607,28 +608,20 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Resp
 			m.emitProgress(job)
 		}
 	}
-	return workerAgent.runTurn(ctx, worker, Turn{Role: RoleUser, Content: []ContentPart{{Type: ContentText, Text: job.task}}}, req, trace, nil)
+	return workerAgent.runTurn(ctx, worker, provider.Turn{Role: provider.RoleUser, Content: []provider.ContentPart{{Type: provider.ContentText, Text: job.task}}}, req, trace, nil)
 }
 
-func cloneResponsePtr(in *Response) *Response {
+func cloneResponsePtr(in *provider.Response) *provider.Response {
 	if in == nil {
 		return nil
 	}
 	out := *in
-	out.Content = append([]ContentPart(nil), in.Content...)
-	out.ToolCalls = append([]ToolCall(nil), in.ToolCalls...)
+	out.Content = append([]provider.ContentPart(nil), in.Content...)
+	out.ToolCalls = append([]provider.ToolCall(nil), in.ToolCalls...)
 	return &out
 }
 
-func cloneToolCallPtr(in *ToolCall) *ToolCall {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneToolResultPtr(in *ToolResult) *ToolResult {
+func cloneToolCallPtr(in *provider.ToolCall) *provider.ToolCall {
 	if in == nil {
 		return nil
 	}
@@ -636,7 +629,15 @@ func cloneToolResultPtr(in *ToolResult) *ToolResult {
 	return &out
 }
 
-func chooseThinking(value, fallback ThinkingLevel) ThinkingLevel {
+func cloneToolResultPtr(in *provider.ToolResult) *provider.ToolResult {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func chooseThinking(value, fallback provider.ThinkingLevel) provider.ThinkingLevel {
 	if value != "" {
 		return value
 	}
@@ -890,8 +891,8 @@ func (r *subAgentRunner) Result(id, verification string) (string, error) {
 
 type subAgentTool struct{ runner SubAgentRunner }
 
-func (t *subAgentTool) Definitions() []Tool {
-	return []Tool{
+func (t *subAgentTool) Definitions() []provider.Tool {
+	return []provider.Tool{
 		{Name: "delegate_task", Description: "Delegate a new task to the worker and return immediately with a job id. Progress and the final handoff report arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"task": map[string]any{"type": "string"}}, "required": []string{"task"}}},
 		{Name: "delegate_message", Description: "Send more work to an existing worker job, reusing the same worker session and history. Pass the id of the job bound to the current plan step to retry that step after it failed or was stopped, or the id of an earlier job to add follow-on work. Returns immediately with a new job id whose progress and final reports arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "required": []string{"job_id", "message"}}},
 		{Name: "delegate_status", Description: "Return the current status, progress, worker session and tool history summary for a delegated job.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
@@ -899,8 +900,8 @@ func (t *subAgentTool) Definitions() []Tool {
 		{Name: "delegate_result", Description: "Return the complete handoff report for a delegated job. Optionally provide verification evidence to explicitly accept a completed plan step.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "verification": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
 	}
 }
-func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
-	result := ToolResult{ID: call.ID}
+func (t *subAgentTool) Execute(ctx context.Context, call provider.ToolCall) provider.ToolResult {
+	result := provider.ToolResult{ID: call.ID}
 	var input struct {
 		Task         string `json:"task"`
 		Message      string `json:"message"`
@@ -930,7 +931,7 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 	case "delegate_message":
 		id, err := t.runner.Message(ctx, strings.TrimSpace(input.JobID), input.Message)
 		if err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
+			return provider.ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
 		}
 		result.Content = "delegated follow-on message started: " + id + " - progress and final reports will arrive automatically"
 		return result
@@ -962,7 +963,7 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 	}
 }
 
-func responseText(resp Response) string {
+func responseText(resp provider.Response) string {
 	var b strings.Builder
 	for _, part := range resp.Content {
 		if strings.TrimSpace(part.Text) == "" {

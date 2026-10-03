@@ -3,18 +3,18 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/sdk"
-	"github.com/Tulipskun/ai-engine/sdk/providers/anthropic"
-	"github.com/Tulipskun/ai-engine/sdk/providers/gemini"
-	"github.com/Tulipskun/ai-engine/sdk/providers/openai"
-	"github.com/Tulipskun/ai-engine/sdk/providers/opencode"
+	"github.com/Tulipskun/ai-engine/provider"
+	"github.com/Tulipskun/ai-engine/provider/anthropic"
+	"github.com/Tulipskun/ai-engine/provider/gemini"
+	"github.com/Tulipskun/ai-engine/provider/openai"
+	"github.com/Tulipskun/ai-engine/provider/opencode"
 )
 
 type Runtime struct {
-	Router          *sdk.Router
-	Client          *sdk.RouterClient
-	Providers       []sdk.ProviderID
-	ProviderConfigs []sdk.ProviderConfig
+	Router          *provider.Router
+	Client          *provider.RouterClient
+	Providers       []provider.ProviderID
+	ProviderConfigs []provider.ProviderConfig
 }
 
 func Load(path string) (*Runtime, error) {
@@ -26,9 +26,9 @@ func Load(path string) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	router := sdk.NewRouter()
-	client := sdk.NewRouterClient(router)
-	providers := make([]sdk.ProviderID, 0, len(configs))
+	router := provider.NewRouter()
+	client := provider.NewRouterClient(router)
+	providers := make([]provider.ProviderID, 0, len(configs))
 	for _, config := range configs {
 		router.RegisterProvider(config)
 		providers = append(providers, config.ID)
@@ -41,15 +41,15 @@ func Load(path string) (*Runtime, error) {
 	return &Runtime{Router: router, Client: client, Providers: providers, ProviderConfigs: configs}, nil
 }
 
-func newAdapter(id sdk.AdapterID) (sdk.Provider, error) {
+func newAdapter(id provider.AdapterID) (provider.Provider, error) {
 	switch id {
-	case sdk.AdapterOpenAI:
+	case provider.AdapterOpenAI:
 		return openai.New(""), nil
-	case sdk.AdapterAnthropic:
+	case provider.AdapterAnthropic:
 		return anthropic.New(""), nil
-	case sdk.AdapterGemini:
+	case provider.AdapterGemini:
 		return gemini.New(""), nil
-	case sdk.AdapterOpenCode:
+	case provider.AdapterOpenCode:
 		return opencode.New(""), nil
 	default:
 		return nil, fmt.Errorf("runtime: unsupported adapter %q", id)
@@ -60,16 +60,16 @@ func (r *Runtime) RefreshModels(ctx context.Context) error {
 	if r == nil || r.Router == nil || r.Client == nil {
 		return fmt.Errorf("runtime: runtime is not initialized")
 	}
-	for _, provider := range r.Providers {
-		if err := r.Client.RefreshModels(ctx, provider); err != nil {
-			return fmt.Errorf("runtime: refresh provider %q: %w", provider, err)
+	for _, providerLocal := range r.Providers {
+		if err := r.Client.RefreshModels(ctx, providerLocal); err != nil {
+			return fmt.Errorf("runtime: refresh provider %q: %w", providerLocal, err)
 		}
 	}
 	return nil
 }
-func (r *Runtime) RefreshProvider(ctx context.Context, provider sdk.ProviderID) error {
+func (r *Runtime) RefreshProvider(ctx context.Context, providerLocal provider.ProviderID) error {
 	if r == nil || r.Client == nil {
 		return fmt.Errorf("runtime: runtime is not initialized")
 	}
-	return r.Client.RefreshModels(ctx, provider)
+	return r.Client.RefreshModels(ctx, providerLocal)
 }

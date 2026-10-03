@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 	"testing"
 )
@@ -14,16 +15,16 @@ import (
 // checked without a workspace or a provider.
 type stubTools struct{ executed []string }
 
-func (s *stubTools) Definitions() []Tool {
-	return []Tool{
+func (s *stubTools) Definitions() []provider.Tool {
+	return []provider.Tool{
 		{Name: "read", Description: "read a file"},
 		{Name: "bash", Description: "run a command"},
 	}
 }
 
-func (s *stubTools) Execute(_ context.Context, call ToolCall) ToolResult {
+func (s *stubTools) Execute(_ context.Context, call provider.ToolCall) provider.ToolResult {
 	s.executed = append(s.executed, call.Name)
-	return ToolResult{ID: call.ID, Content: "ok"}
+	return provider.ToolResult{ID: call.ID, Content: "ok"}
 }
 
 func newPlannerUnderTest(t *testing.T) (*planningToolExecutor, *stubTools) {
@@ -49,7 +50,7 @@ func TestPlannerAdvertisesNoExecutionTools(t *testing.T) {
 
 func TestPlannerRejectsDirectExecution(t *testing.T) {
 	executor, base := newPlannerUnderTest(t)
-	result := executor.Execute(context.Background(), ToolCall{ID: "1", Name: "bash", Arguments: `{"command":"rm -rf /"}`})
+	result := executor.Execute(context.Background(), provider.ToolCall{ID: "1", Name: "bash", Arguments: `{"command":"rm -rf /"}`})
 	if !result.IsError {
 		t.Error("a bash call from the planner must be refused")
 	}
@@ -72,7 +73,7 @@ func TestEveryAdvertisedOrchestrationToolIsRoutable(t *testing.T) {
 			t.Errorf("%q is routable but not advertised to the planner", name)
 			continue
 		}
-		result := executor.Execute(context.Background(), ToolCall{ID: "1", Name: name, Arguments: `{}`})
+		result := executor.Execute(context.Background(), provider.ToolCall{ID: "1", Name: name, Arguments: `{}`})
 		// An unknown job id is the correct answer here; being told the planner has
 		// no such tool is the bug.
 		if result.IsError && strings.Contains(result.Content, "no write/exec") {
@@ -83,7 +84,7 @@ func TestEveryAdvertisedOrchestrationToolIsRoutable(t *testing.T) {
 
 func TestPlannerReadsThroughTheRegistry(t *testing.T) {
 	executor, base := newPlannerUnderTest(t)
-	result := executor.Execute(context.Background(), ToolCall{ID: "1", Name: "read", Arguments: `{"path":"index.md"}`})
+	result := executor.Execute(context.Background(), provider.ToolCall{ID: "1", Name: "read", Arguments: `{"path":"index.md"}`})
 	if result.IsError {
 		t.Fatalf("read must be allowed for the planner, got %q", result.Content)
 	}

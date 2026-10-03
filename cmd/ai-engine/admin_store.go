@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"path/filepath"
 	"sort"
@@ -58,12 +59,12 @@ type adminStore struct {
 
 	// mainRoute is the daemon's boot default, used when the system config leaves
 	// the main provider or model empty.
-	mainRoute sdk.SessionConfig
+	mainRoute provider.SessionConfig
 }
 
 func newAdminStore(stateRoot string, client *d1store.Client, manager *runtime.ProviderManager,
 	providerConfig *runtime.ProviderFileConfig, sessions *runtime.SessionManager, agent *sdk.Agent,
-	mainRoute sdk.SessionConfig) *adminStore {
+	mainRoute provider.SessionConfig) *adminStore {
 	return &adminStore{
 		providerPath:   filepath.Join(stateRoot, "config", "provider.json"),
 		systemPath:     filepath.Join(stateRoot, "config", "system.json"),
@@ -83,7 +84,7 @@ func newAdminStore(stateRoot string, client *d1store.Client, manager *runtime.Pr
 // probeTools is the agent's own tool set when the daemon has one, so the health
 // check is a real turn in miniature. The fallback keeps the store usable in
 // tests and during boot.
-func (a *adminStore) probeTools() []sdk.Tool {
+func (a *adminStore) probeTools() []provider.Tool {
 	if a.agent != nil && a.agent.Tools != nil {
 		if defs := a.agent.Tools.Definitions(); len(defs) > 0 {
 			return defs
@@ -93,7 +94,7 @@ func (a *adminStore) probeTools() []sdk.Tool {
 }
 
 // probeTool is the small tool set a health check falls back to.
-func probeTool() []sdk.Tool {
+func probeTool() []provider.Tool {
 	schema := func(props map[string]any, required ...string) map[string]any {
 		return map[string]any{
 			"type":       "object",
@@ -101,7 +102,7 @@ func probeTool() []sdk.Tool {
 			"required":   required,
 		}
 	}
-	return []sdk.Tool{
+	return []provider.Tool{
 		{
 			Name:        "bash",
 			Description: "Run a shell command in a persistent session.",
@@ -123,15 +124,15 @@ func probeTool() []sdk.Tool {
 // drainProbe waits for the first answer of a streamed probe. Any event with
 // content means the provider answered; only a channel that ends in an error
 // counts as a failure.
-func drainProbe(ch <-chan sdk.Event) error {
+func drainProbe(ch <-chan provider.Event) error {
 	var failure error
 	for event := range ch {
 		switch event.Type {
-		case sdk.EventError:
+		case provider.EventError:
 			if failure == nil && event.Err != nil {
 				failure = event.Err
 			}
-		case sdk.EventText, sdk.EventToolCall, sdk.EventReasoning:
+		case provider.EventText, provider.EventToolCall, provider.EventReasoning:
 			if event.Text != "" || event.ToolCall != nil || event.Reasoning != nil {
 				return nil
 			}
@@ -143,7 +144,7 @@ func drainProbe(ch <-chan sdk.Event) error {
 // WorkingModel reports the model that answered the last successful probe, so the
 // phone can default to a model that is known to work instead of the first one
 // in the catalogue.
-func (a *adminStore) WorkingModel(id sdk.ProviderID) string {
+func (a *adminStore) WorkingModel(id provider.ProviderID) string {
 	a.statusMu.RLock()
 	defer a.statusMu.RUnlock()
 	return a.probedModel[string(id)]
@@ -218,12 +219,12 @@ func (a *adminStore) statusOf(p runtime.ProviderFile, manager *runtime.ProviderM
 	view := mobiletransport.ProviderStatus{
 		ID: p.Name, Adapter: p.Adapter, Endpoint: p.HTTPEndpoint,
 		FreeOnly: p.FreeOnly, KeyCount: len(p.APIKeys), LastError: a.lastError(p.Name),
-		Probed: a.wasProbed(p.Name), WorkingModel: a.WorkingModel(sdk.ProviderID(p.Name)),
+		Probed: a.wasProbed(p.Name), WorkingModel: a.WorkingModel(provider.ProviderID(p.Name)),
 	}
 	if manager == nil || manager.Rt() == nil || manager.Rt().Router == nil {
 		return view
 	}
-	id := sdk.ProviderID(p.Name)
+	id := provider.ProviderID(p.Name)
 	view.ModelCount = len(manager.Rt().Router.Models(id))
 	view.Reachable = view.LastError == "" && view.ModelCount > 0
 	return view
@@ -235,8 +236,8 @@ func (a *adminStore) AddProvider(ctx context.Context, spec mobiletransport.Provi
 		return mobiletransport.ProviderStatus{}, errors.New("ต้องตั้งชื่อ provider")
 	}
 	adapter := strings.ToLower(strings.TrimSpace(spec.Adapter))
-	switch sdk.AdapterID(adapter) {
-	case sdk.AdapterOpenAI, sdk.AdapterAnthropic, sdk.AdapterGemini, sdk.AdapterOpenCode:
+	switch provider.AdapterID(adapter) {
+	case provider.AdapterOpenAI, provider.AdapterAnthropic, provider.AdapterGemini, provider.AdapterOpenCode:
 	default:
 		return mobiletransport.ProviderStatus{}, fmt.Errorf("adapter %q ไม่รู้จัก (ใช้ openai, anthropic, gemini หรือ opencode)", spec.Adapter)
 	}
@@ -397,7 +398,7 @@ func (a *adminStore) RefreshProviders(ctx context.Context) ([]mobiletransport.Pr
 	var wg sync.WaitGroup
 	for _, config := range configs {
 		wg.Add(1)
-		go func(config sdk.ProviderConfig) {
+		go func(config provider.ProviderConfig) {
 			defer wg.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
@@ -418,7 +419,7 @@ const (
 )
 
 // check runs discovery and the probe for one provider and records the verdict.
-func (a *adminStore) check(ctx context.Context, config sdk.ProviderConfig) {
+func (a *adminStore) check(ctx context.Context, config provider.ProviderConfig) {
 	ctx, cancel := context.WithTimeout(ctx, probeBudget)
 	defer cancel()
 	if err := a.manager.RefreshProvider(ctx, config.ID); err != nil {
@@ -442,7 +443,7 @@ func (a *adminStore) RefreshProvider(ctx context.Context, id string) (mobiletran
 	if err != nil {
 		return mobiletransport.ProviderStatus{}, err
 	}
-	var found *sdk.ProviderConfig
+	var found *provider.ProviderConfig
 	for i := range configs {
 		if strings.EqualFold(string(configs[i].ID), id) {
 			found = &configs[i]
@@ -476,7 +477,7 @@ func (a *adminStore) RefreshProvider(ctx context.Context, id string) (mobiletran
 // outside its own client with 403 FreeTierError and counts every one of those
 // requests against the quota it is already refusing, so a health check that kept
 // asking would make its own recovery slower.
-func (a *adminStore) probe(ctx context.Context, config sdk.ProviderConfig) error {
+func (a *adminStore) probe(ctx context.Context, config provider.ProviderConfig) error {
 	router := a.manager.Rt()
 	if router == nil || router.Router == nil || router.Client == nil {
 		return errors.New("runtime: router is not available")
@@ -491,17 +492,17 @@ func (a *adminStore) probe(ctx context.Context, config sdk.ProviderConfig) error
 	}
 	var last error
 	for _, model := range attempts {
-		session := sdk.NewSession(sdk.SessionConfig{
+		session := sdk.NewSession(provider.SessionConfig{
 			ID: "provider-probe-" + string(config.ID), Provider: config.ID, Model: model.ID,
 		}, config.Keys)
 		// The request must stream: some gateways (OpenCode Zen's free tier)
 		// refuse a non-streaming completion outright, so a non-streaming health
 		// check would report a working provider as dead.
-		ch, err := router.Client.Stream(ctx, session, sdk.Request{
+		ch, err := router.Client.Stream(ctx, session, provider.Request{
 			Model:           model.ID,
 			Stream:          true,
 			SystemPrompt:    "You are a coding agent. Answer briefly.",
-			Messages:        []sdk.Turn{{Role: sdk.RoleUser, Content: []sdk.ContentPart{{Type: sdk.ContentText, Text: "ping"}}}},
+			Messages:        []provider.Turn{{Role: provider.RoleUser, Content: []provider.ContentPart{{Type: provider.ContentText, Text: "ping"}}}},
 			MaxOutputTokens: 16,
 			// The same tools a real turn carries: a health check that is not
 			// shaped like a turn can be refused by a gateway that would serve it
@@ -529,11 +530,11 @@ func (a *adminStore) probe(ctx context.Context, config sdk.ProviderConfig) error
 // probeOrder puts the model that answered last time first, then the rest of the
 // catalogue in its own order. A provider that works on one model should not be
 // reported dead because model #1 happens to be unavailable.
-func probeOrder(models []sdk.Model, working string) []sdk.Model {
+func probeOrder(models []provider.Model, working string) []provider.Model {
 	if working == "" {
 		return models
 	}
-	ordered := make([]sdk.Model, 0, len(models))
+	ordered := make([]provider.Model, 0, len(models))
 	for _, m := range models {
 		if m.ID == working {
 			ordered = append(ordered, m)
@@ -559,7 +560,7 @@ func (a *adminStore) setProbedModel(id, model string) {
 // act on. The quota-based refusals are temporary by nature, so they are named as
 // such instead of leaving the phone to read a raw status code as "broken".
 func refusalMessage(err error) (error, bool) {
-	var statusErr sdk.HTTPStatusError
+	var statusErr provider.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return nil, false
 	}
@@ -614,7 +615,7 @@ func (a *adminStore) saveProvidersLocked(ctx context.Context, file runtime.Provi
 }
 
 // systemGenerationToWire converts the main agent's stored knobs for the phone.
-func systemGenerationToWire(g sdk.GenerationSettings) mobiletransport.GenerationSettings {
+func systemGenerationToWire(g provider.GenerationSettings) mobiletransport.GenerationSettings {
 	return fromSDK(g)
 }
 
@@ -706,7 +707,7 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	// A worker inherits the parent's knobs, so the ones the worker cannot own
 	// follow the main agent rather than being stranded on a value it was never told about.
 	cfg.SubAgent.Temperature = subKnobs.Temperature
-	cfg.SubAgent.ThinkingLevel = sdk.ThinkingLevel(subKnobs.ThinkingLevel)
+	cfg.SubAgent.ThinkingLevel = provider.ThinkingLevel(subKnobs.ThinkingLevel)
 	cfg.SubAgent.MaxOutputTokens = subKnobs.MaxOutputTokens
 	if cfg.SubAgent.MaxOutputTokens == 0 {
 		cfg.SubAgent.MaxOutputTokens = mainKnobs.MaxOutputTokens
@@ -793,13 +794,13 @@ func (a *adminStore) applySettings(cfg runtime.SystemConfig) {
 
 // mainRouteFrom is the session config a stored system config implies, knobs
 // included, so the boot default and a live reload describe the same thing.
-func mainRouteFrom(cfg runtime.SystemConfig) sdk.SessionConfig {
+func mainRouteFrom(cfg runtime.SystemConfig) provider.SessionConfig {
 	g := cfg.Settings()
 	if g.MaxOutputTokens == 0 {
 		g.MaxOutputTokens = cfg.MaxOutputTokensFor()
 	}
-	return sdk.SessionConfig{
-		Provider:         sdk.ProviderID(cfg.Provider),
+	return provider.SessionConfig{
+		Provider:         provider.ProviderID(cfg.Provider),
 		Model:            cfg.Model,
 		ThinkingLevel:    g.ThinkingLevel,
 		Temperature:      g.Temperature,
@@ -813,22 +814,22 @@ func mainRouteFrom(cfg runtime.SystemConfig) sdk.SessionConfig {
 	}
 }
 
-func (a *adminStore) defaultRoute() sdk.SessionConfig {
+func (a *adminStore) defaultRoute() provider.SessionConfig {
 	return a.mainRoute
 }
 
 // validateRoute rejects a pair the router cannot serve, so the phone learns
 // immediately instead of on the next turn.
 func (a *adminStore) validateRoute(route mobiletransport.AgentSettings) error {
-	provider := sdk.ProviderID(strings.TrimSpace(route.Provider))
+	providerLocal := provider.ProviderID(strings.TrimSpace(route.Provider))
 	model := strings.TrimSpace(route.Model)
-	if provider == "" || model == "" {
+	if providerLocal == "" || model == "" {
 		return nil
 	}
 	if a.manager == nil || a.manager.Rt() == nil || a.manager.Rt().Router == nil {
 		return errors.New("router ยังไม่พร้อม")
 	}
-	if _, err := a.manager.Rt().Router.Resolve(provider, model); err != nil {
+	if _, err := a.manager.Rt().Router.Resolve(providerLocal, model); err != nil {
 		return err
 	}
 	return nil

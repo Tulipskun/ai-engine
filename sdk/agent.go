@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"sync"
 	"time"
 )
@@ -11,12 +12,12 @@ import (
 var ErrAgentRetriesExhausted = errors.New("sdk: agent retries exhausted")
 
 type ToolExecutor interface {
-	Definitions() []Tool
-	Execute(context.Context, ToolCall) ToolResult
+	Definitions() []provider.Tool
+	Execute(context.Context, provider.ToolCall) provider.ToolResult
 }
 
 type Agent struct {
-	Client          *RouterClient
+	Client          *provider.RouterClient
 	Tools           ToolExecutor
 	MaxRetries      int
 	DisablePlanning bool
@@ -47,15 +48,15 @@ func (a *Agent) subAgentManager() *subAgentManager {
 	return a.subAgents
 }
 
-func (a *Agent) RunTurn(ctx context.Context, session *Session, user Turn, req Request) (Response, error) {
+func (a *Agent) RunTurn(ctx context.Context, session *Session, user provider.Turn, req provider.Request) (provider.Response, error) {
 	return a.runTurn(ctx, session, user, req, nil, nil)
 }
 
-func (a *Agent) RunTurnWithTrace(ctx context.Context, session *Session, user Turn, req Request, trace TraceFunc) (Response, error) {
+func (a *Agent) RunTurnWithTrace(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc) (provider.Response, error) {
 	return a.runTurn(ctx, session, user, req, trace, nil)
 }
 
-func (a *Agent) RunTurnWithTraceAndEntry(ctx context.Context, session *Session, user Turn, req Request, trace TraceFunc, entry func(context.Context, Input) error) (Response, error) {
+func (a *Agent) RunTurnWithTraceAndEntry(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc, entry func(context.Context, Input) error) (provider.Response, error) {
 	return a.runTurn(ctx, session, user, req, trace, entry)
 }
 
@@ -119,9 +120,9 @@ func (a *Agent) beginInterrupt(ctx context.Context, sessionID string) (context.C
 	}
 }
 
-func (a *Agent) runTurn(ctx context.Context, session *Session, user Turn, req Request, trace TraceFunc, entry func(context.Context, Input) error) (Response, error) {
+func (a *Agent) runTurn(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc, entry func(context.Context, Input) error) (provider.Response, error) {
 	if a == nil || a.Client == nil || session == nil {
-		return Response{}, errors.New("sdk: incomplete agent configuration")
+		return provider.Response{}, errors.New("sdk: incomplete agent configuration")
 	}
 	ctx, cleanup := a.beginInterrupt(ctx, session.ID())
 	defer cleanup()
@@ -183,15 +184,15 @@ func (a *Agent) runTurn(ctx context.Context, session *Session, user Turn, req Re
 				settleInterruptedTurn(session, before)
 			}
 			traceEvent(ctx, trace, newTraceEvent(TraceError, withErr(err)))
-			return Response{}, err
+			return provider.Response{}, err
 		}
 	}
 
 	traceEvent(ctx, trace, newTraceEvent(TraceError, withErr(lastErr)))
 	if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
-		return Response{}, lastErr
+		return provider.Response{}, lastErr
 	}
-	return Response{}, fmt.Errorf("%w: attempts=%d: %w", ErrAgentRetriesExhausted, retries+1, lastErr)
+	return provider.Response{}, fmt.Errorf("%w: attempts=%d: %w", ErrAgentRetriesExhausted, retries+1, lastErr)
 }
 
 // planningFor reports whether the turn for session runs through the Main
@@ -205,10 +206,10 @@ func (a *Agent) planningFor(session *Session) bool {
 	if session == nil {
 		return true
 	}
-	return session.Config().AgentMode != AgentModeSub
+	return session.Config().AgentMode != provider.AgentModeSub
 }
 
-func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error, clock *turnClock) (Response, error) {
+func (a *Agent) runAttempt(ctx context.Context, session *Session, user provider.Turn, req provider.Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error, clock *turnClock) (provider.Response, error) {
 	var executor ToolExecutor
 	if a.planningFor(session) {
 		executor = newPlanningToolExecutor(a.Tools, session)
@@ -229,7 +230,7 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 	lc := &loopControlTracker{}
 	for {
 		if err := ctx.Err(); err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 		req.Messages = buildContextWindow(session.History(), defaultContextWindowTokens)
 		req.SystemPrompt = baseSystemPrompt
@@ -246,12 +247,12 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 
 		resp, err := a.Client.Generate(ctx, session, req)
 		if err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 		clock.accept()
 		traceEvent(ctx, trace, newTraceEvent(TraceProviderReady))
 		if err := ctx.Err(); err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 		if backoff != nil {
 			backoff.Reset()
@@ -269,43 +270,43 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 		if executor == nil {
 			for _, call := range resp.ToolCalls {
 				if err := ctx.Err(); err != nil {
-					return Response{}, err
+					return provider.Response{}, err
 				}
 				callCopy := cloneToolCall(call)
 				traceEvent(ctx, trace, newTraceEvent(TraceToolCall, withToolCall(callCopy)))
 				traceEvent(ctx, trace, newTraceEvent(TraceToolRunning, withToolCall(callCopy)))
 				if err := lc.noteCall(call.Name); err != nil {
-					return Response{}, err
+					return provider.Response{}, err
 				}
-				result := ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
+				result := provider.ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
 				traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
 				if entry != nil {
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: cloneToolResult(result)}}); err != nil {
-						return Response{}, err
+					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: cloneToolResult(result)}}); err != nil {
+						return provider.Response{}, err
 					}
 				} else {
 					resultCopy := result
-					session.Append(Turn{Role: RoleToolResult, ToolResult: &resultCopy})
+					session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 				}
 			}
 			continue
 		}
 		for _, call := range resp.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			callCopy := cloneToolCall(call)
 			traceEvent(ctx, trace, newTraceEvent(TraceToolCall, withToolCall(callCopy)))
 			traceEvent(ctx, trace, newTraceEvent(TraceToolRunning, withToolCall(callCopy)))
 			if err := lc.noteCall(call.Name); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			result := executor.Execute(ctx, call)
 			if err := ctx.Err(); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			if err := lc.noteResult(call.Name, result); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			if result.ID == "" {
 				result.ID = call.ID
@@ -313,17 +314,17 @@ func (a *Agent) runAttempt(ctx context.Context, session *Session, user Turn, req
 			traceEvent(ctx, trace, newTraceEvent(TraceToolResult, withToolCall(callCopy), withToolResult(cloneToolResult(result))))
 			resultCopy := result
 			if entry != nil {
-				if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: &resultCopy}}); err != nil {
-					return Response{}, err
+				if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
+					return provider.Response{}, err
 				}
 			} else {
-				session.Append(Turn{Role: RoleToolResult, ToolResult: &resultCopy})
+				session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 			}
 		}
 	}
 }
 
-func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error) (Response, error) {
+func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req provider.Request, trace TraceFunc, backoff *retryBackoff, entry func(context.Context, Input) error) (provider.Response, error) {
 	clock := &turnClock{}
 	if trace != nil {
 		inner := trace
@@ -343,7 +344,7 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 	lc := &loopControlTracker{}
 	for {
 		if err := ctx.Err(); err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 		req.Messages = buildContextWindow(session.History(), defaultContextWindowTokens)
 		req.SystemPrompt = baseSystemPrompt
@@ -360,28 +361,28 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 
 		events, err := a.Client.Stream(ctx, session, req)
 		if err != nil {
-			return Response{}, err
+			return provider.Response{}, err
 		}
 		clock.accept()
 		traceEvent(ctx, trace, newTraceEvent(TraceProviderReady))
 
-		var resp Response
-		var text []ContentPart
-		var calls []ToolCall
-		var reasoning *ReasoningState
+		var resp provider.Response
+		var text []provider.ContentPart
+		var calls []provider.ToolCall
+		var reasoning *provider.ReasoningState
 		var streamErr error
 		for event := range events {
 			switch event.Type {
-			case EventText:
+			case provider.EventText:
 				if event.Text != "" {
-					text = append(text, ContentPart{Type: ContentText, Text: event.Text})
+					text = append(text, provider.ContentPart{Type: provider.ContentText, Text: event.Text})
 					traceEvent(ctx, trace, TraceEvent{Stage: TraceResponseContent, Text: event.Text})
 				}
-			case EventReasoning:
+			case provider.EventReasoning:
 				if event.Reasoning != nil {
 					r := *event.Reasoning
 					if reasoning == nil {
-						reasoning = &ReasoningState{}
+						reasoning = &provider.ReasoningState{}
 					}
 					if r.ID != "" {
 						reasoning.ID = r.ID
@@ -391,25 +392,25 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 						traceEvent(ctx, trace, TraceEvent{Stage: TraceResponseText, Text: r.Text})
 					}
 				}
-			case EventToolCall:
+			case provider.EventToolCall:
 				if event.ToolCall != nil {
 					call := *event.ToolCall
 					calls = append(calls, call)
 					traceEvent(ctx, trace, TraceEvent{Stage: TraceToolCall, ToolCall: cloneToolCall(call)})
 				}
-			case EventDone:
+			case provider.EventDone:
 				if event.Response != nil {
 					resp = *event.Response
 				}
-			case EventError:
+			case provider.EventError:
 				streamErr = event.Err
 			}
-			if event.Type == EventError {
+			if event.Type == provider.EventError {
 				break
 			}
 		}
 		if streamErr != nil {
-			return Response{}, streamErr
+			return provider.Response{}, streamErr
 		}
 		if resp.Provider == "" {
 			resp.Provider = string(session.Config().Provider)
@@ -445,36 +446,36 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 				callCopy := cloneToolCall(call)
 				traceEvent(ctx, trace, TraceEvent{Stage: TraceToolRunning, ToolCall: callCopy})
 				if err := lc.noteCall(call.Name); err != nil {
-					return Response{}, err
+					return provider.Response{}, err
 				}
-				result := ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
+				result := provider.ToolResult{ID: call.ID, Content: "tool execution is not configured", IsError: true}
 				traceEvent(ctx, trace, TraceEvent{Stage: TraceToolResult, ToolCall: callCopy, ToolResult: cloneToolResult(result)})
 				resultCopy := result
 				if entry != nil {
-					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: &resultCopy}}); err != nil {
-						return Response{}, err
+					if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
+						return provider.Response{}, err
 					}
 				} else {
-					session.Append(Turn{Role: RoleToolResult, ToolResult: &resultCopy})
+					session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 				}
 			}
 			continue
 		}
 		for _, call := range resp.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			callCopy := cloneToolCall(call)
 			traceEvent(ctx, trace, TraceEvent{Stage: TraceToolRunning, ToolCall: callCopy})
 			if err := lc.noteCall(call.Name); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			result := executor.Execute(ctx, call)
 			if err := ctx.Err(); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			if err := lc.noteResult(call.Name, result); err != nil {
-				return Response{}, err
+				return provider.Response{}, err
 			}
 			if result.ID == "" {
 				result.ID = call.ID
@@ -482,17 +483,17 @@ func (a *Agent) runStreamAttempt(ctx context.Context, session *Session, req Requ
 			traceEvent(ctx, trace, TraceEvent{Stage: TraceToolResult, ToolCall: callCopy, ToolResult: cloneToolResult(result)})
 			resultCopy := result
 			if entry != nil {
-				if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: Turn{Role: RoleToolResult, ToolResult: &resultCopy}}); err != nil {
-					return Response{}, err
+				if err := entry(ctx, Input{Source: "tool", SessionID: session.ID(), Turn: provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy}}); err != nil {
+					return provider.Response{}, err
 				}
 			} else {
-				session.Append(Turn{Role: RoleToolResult, ToolResult: &resultCopy})
+				session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &resultCopy})
 			}
 		}
 	}
 }
 
-func settleInterruptedTurn(session *Session, before []Turn) {
+func settleInterruptedTurn(session *Session, before []provider.Turn) {
 	if session == nil {
 		return
 	}
@@ -504,13 +505,13 @@ func settleInterruptedTurn(session *Session, before []Turn) {
 	pending := make(map[string]string)
 	var order []string
 	for _, turn := range history[start:] {
-		if turn.Role == RoleToolCall && turn.ToolCall != nil && turn.ToolCall.ID != "" {
+		if turn.Role == provider.RoleToolCall && turn.ToolCall != nil && turn.ToolCall.ID != "" {
 			if _, dup := pending[turn.ToolCall.ID]; !dup {
 				pending[turn.ToolCall.ID] = turn.ToolCall.Name
 				order = append(order, turn.ToolCall.ID)
 			}
 		}
-		if turn.Role == RoleToolResult && turn.ToolResult != nil {
+		if turn.Role == provider.RoleToolResult && turn.ToolResult != nil {
 			delete(pending, turn.ToolResult.ID)
 		}
 	}
@@ -522,7 +523,7 @@ func settleInterruptedTurn(session *Session, before []Turn) {
 		if name == "" {
 			name = "tool"
 		}
-		session.Append(Turn{Role: RoleToolResult, ToolResult: &ToolResult{ID: id, Content: "tool `" + name + "` was interrupted by the user; it may have partially run, not run at all, or already finished - verify the actual state before retrying.", IsError: true}})
+		session.Append(provider.Turn{Role: provider.RoleToolResult, ToolResult: &provider.ToolResult{ID: id, Content: "tool `" + name + "` was interrupted by the user; it may have partially run, not run at all, or already finished - verify the actual state before retrying.", IsError: true}})
 	}
 }
 
@@ -589,13 +590,13 @@ func newTraceEvent(stage TraceStage, opts ...func(*TraceEvent)) TraceEvent {
 	return event
 }
 
-func withResponse(resp Response) func(*TraceEvent) {
+func withResponse(resp provider.Response) func(*TraceEvent) {
 	return func(event *TraceEvent) { clone := cloneResponseContent(resp); event.Response = clone }
 }
-func withToolCall(call *ToolCall) func(*TraceEvent) {
+func withToolCall(call *provider.ToolCall) func(*TraceEvent) {
 	return func(event *TraceEvent) { event.ToolCall = call }
 }
-func withToolResult(result *ToolResult) func(*TraceEvent) {
+func withToolResult(result *provider.ToolResult) func(*TraceEvent) {
 	return func(event *TraceEvent) { event.ToolResult = result }
 }
 func withText(text string) func(*TraceEvent) {
@@ -608,12 +609,12 @@ func withRetryAfter(d time.Duration) func(*TraceEvent) {
 	return func(event *TraceEvent) { event.RetryAfter = d }
 }
 
-func cloneResponseContent(in Response) *Response {
-	return &Response{Provider: in.Provider, Model: in.Model, Content: append([]ContentPart(nil), in.Content...), Reasoning: in.Reasoning, Usage: in.Usage}
+func cloneResponseContent(in provider.Response) *provider.Response {
+	return &provider.Response{Provider: in.Provider, Model: in.Model, Content: append([]provider.ContentPart(nil), in.Content...), Reasoning: in.Reasoning, Usage: in.Usage}
 }
 
-func cloneToolCall(in ToolCall) *ToolCall       { out := in; return &out }
-func cloneToolResult(in ToolResult) *ToolResult { out := in; return &out }
+func cloneToolCall(in provider.ToolCall) *provider.ToolCall       { out := in; return &out }
+func cloneToolResult(in provider.ToolResult) *provider.ToolResult { out := in; return &out }
 
 func retryableAgentError(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
@@ -639,7 +640,7 @@ func retryableAgentError(ctx context.Context, err error) bool {
 // answers the same way whatever key is presented, and every retry spends quota
 // the tier is already refusing.
 func isKeyRejection(err error) bool {
-	var statusErr HTTPStatusError
+	var statusErr provider.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return false
 	}
@@ -661,7 +662,7 @@ func rotateToNextKey(session *Session, tried int) bool {
 }
 
 func isRateLimitError(err error) bool {
-	statusErr, ok := err.(HTTPStatusError)
+	statusErr, ok := err.(provider.HTTPStatusError)
 	return ok && statusErr.HTTPStatusCode() == 429
 }
 
@@ -669,7 +670,7 @@ func isRateLimitError(err error) bool {
 // is not accepted, 403 says this client or tier is not allowed. Neither becomes
 // true by asking again right away, so a turn reports it instead of retrying.
 func isPolicyRefusal(err error) bool {
-	var statusErr HTTPStatusError
+	var statusErr provider.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return false
 	}
@@ -689,7 +690,7 @@ func retryAfterAbort(err error) bool {
 	if !isRateLimitError(err) {
 		return false
 	}
-	ra, ok := err.(RetryAfterError)
+	ra, ok := err.(provider.RetryAfterError)
 	if !ok {
 		return false
 	}
@@ -698,7 +699,7 @@ func retryAfterAbort(err error) bool {
 
 func retryDelay(err error, attempt int) time.Duration {
 	if isRateLimitError(err) {
-		if retryAfter, ok := err.(RetryAfterError); ok {
+		if retryAfter, ok := err.(provider.RetryAfterError); ok {
 			if d := retryAfter.RetryAfter(); d > 0 {
 				if d > maxRetryCooldown {
 					return maxRetryCooldown

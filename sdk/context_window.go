@@ -1,12 +1,14 @@
 package sdk
 
+import "github.com/Tulipskun/ai-engine/provider"
+
 const defaultContextWindowTokens = 58000
 
 // buildContextWindow returns the newest complete interaction groups that fit
 // within the token budget. A group starts at a user turn and contains the
 // model response plus any tool calls/results that follow it. Groups are never
 // split, so provider-native reasoning and tool state stay consistent.
-func buildContextWindow(history []Turn, maxTokens int) []Turn {
+func buildContextWindow(history []provider.Turn, maxTokens int) []provider.Turn {
 	if len(history) == 0 {
 		return nil
 	}
@@ -14,12 +16,12 @@ func buildContextWindow(history []Turn, maxTokens int) []Turn {
 		maxTokens = defaultContextWindowTokens
 	}
 
-	groups := make([][]Turn, 0, len(history))
-	current := make([]Turn, 0, 4)
+	groups := make([][]provider.Turn, 0, len(history))
+	current := make([]provider.Turn, 0, 4)
 	for _, turn := range history {
-		if turn.Role == RoleUser && len(current) > 0 {
+		if turn.Role == provider.RoleUser && len(current) > 0 {
 			groups = append(groups, current)
-			current = make([]Turn, 0, 4)
+			current = make([]provider.Turn, 0, 4)
 		}
 		current = append(current, cloneTurn(turn))
 	}
@@ -41,14 +43,14 @@ func buildContextWindow(history []Turn, maxTokens int) []Turn {
 		}
 	}
 
-	var out []Turn
+	var out []provider.Turn
 	for _, group := range groups[selectedStart:] {
 		out = append(out, group...)
 	}
 	return out
 }
 
-func estimateTurnGroupTokens(group []Turn) int {
+func estimateTurnGroupTokens(group []provider.Turn) int {
 	total := 0
 	for _, turn := range group {
 		total += estimateTurnTokens(turn)
@@ -56,7 +58,7 @@ func estimateTurnGroupTokens(group []Turn) int {
 	return total
 }
 
-func estimateTurnTokens(turn Turn) int {
+func estimateTurnTokens(turn provider.Turn) int {
 	chars := 0
 	for _, part := range turn.Content {
 		chars += len([]rune(part.Text))

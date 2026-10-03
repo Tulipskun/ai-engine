@@ -3,16 +3,17 @@ package sdk
 import (
 	"context"
 	"errors"
+	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"sync"
 	"time"
 )
 
 type SessionResolver func(context.Context, Input) (*Session, error)
-type RequestResolver func(context.Context, Input, *Session) (Request, error)
+type RequestResolver func(context.Context, Input, *Session) (provider.Request, error)
 
 type HarnessLoop struct {
-	Client         *RouterClient
+	Client         *provider.RouterClient
 	Agent          *Agent
 	Source         InputSource
 	ResolveSession SessionResolver
@@ -68,7 +69,7 @@ func (h *HarnessLoop) Run(ctx context.Context) error {
 			if input.SessionID == "" {
 				input.SessionID = event.Parent.ID()
 			}
-			input.Turn = Turn{Role: RoleUser, Content: []ContentPart{{Type: ContentText, Text: event.Message()}}}
+			input.Turn = provider.Turn{Role: provider.RoleUser, Content: []provider.ContentPart{{Type: provider.ContentText, Text: event.Message()}}}
 			go func() {
 				if err := h.Entry(context.WithoutCancel(ctx), input); err != nil {
 					if h.OnTurnError != nil {
@@ -128,7 +129,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 	if session == nil {
 		return errors.New("sdk: session resolver returned nil session")
 	}
-	if input.Turn.Role == RoleToolResult || input.Turn.ToolResult != nil {
+	if input.Turn.Role == provider.RoleToolResult || input.Turn.ToolResult != nil {
 		session.Append(input.Turn)
 		return nil
 	}
@@ -149,7 +150,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 			return err
 		}
 	}
-	var req Request
+	var req provider.Request
 	if h.BuildRequest != nil {
 		req, err = h.BuildRequest(ctx, input, session)
 		if err != nil {
@@ -181,7 +182,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 	if h.ApplySessionConfig != nil {
 		h.ApplySessionConfig(session.ID())
 	}
-	var resp Response
+	var resp provider.Response
 	if h.Agent != nil {
 		resp, err = h.Agent.RunTurnWithTraceAndEntry(ctx, session, input.Turn, req, dispatchTrace, h.Entry)
 	} else {
@@ -198,7 +199,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input Input) error {
 	if responseTraced {
 		return nil
 	}
-	output := Output{Source: input.Source, SessionID: input.SessionID, Content: append([]ContentPart(nil), resp.Content...), Response: resp, Metadata: cloneMetadata(input.Metadata)}
+	output := Output{Source: input.Source, SessionID: input.SessionID, Content: append([]provider.ContentPart(nil), resp.Content...), Response: resp, Metadata: cloneMetadata(input.Metadata)}
 	if output.Metadata == nil {
 		output.Metadata = map[string]string{}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Tulipskun/ai-engine/provider"
 	"sort"
 	"strings"
 
@@ -17,7 +18,7 @@ type Registry struct {
 	workspace string
 	resolver  func(context.Context) string
 	handlers  map[string]handler
-	defs      []sdk.Tool
+	defs      []provider.Tool
 }
 
 // NewRegistry builds the worker's execution tool surface: read and bash. All
@@ -62,15 +63,15 @@ func (r *Registry) rootFor(ctx context.Context) string {
 
 func (r *Registry) register(name, description string, fn handler, schema any) {
 	r.handlers[name] = fn
-	r.defs = append(r.defs, sdk.Tool{Name: name, Description: description, InputSchema: schema})
+	r.defs = append(r.defs, provider.Tool{Name: name, Description: description, InputSchema: schema})
 }
-func (r *Registry) Definitions() []sdk.Tool {
-	out := append([]sdk.Tool(nil), r.defs...)
+func (r *Registry) Definitions() []provider.Tool {
+	out := append([]provider.Tool(nil), r.defs...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
-func (r *Registry) Execute(ctx context.Context, call sdk.ToolCall) sdk.ToolResult {
-	result := sdk.ToolResult{ID: call.ID}
+func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) provider.ToolResult {
+	result := provider.ToolResult{ID: call.ID}
 	fn, ok := r.handlers[call.Name]
 	if !ok {
 		result.Content = fmt.Sprintf("unknown tool: %s", call.Name)
