@@ -39,7 +39,7 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 | Context budget, newest-group truncation | `sdk/context_window.go` |
 | Session persistence (one db per session) | `sdk/session_db.go`, `sdk/session_settings.go` |
 | Provider routing, catalogue, retry | `sdk/router_client.go`, `sdk/routing.go`, `sdk/providers/` |
-| Worker tool surface (read, bash, screen_control) | `tools/registry.go` |
+| Worker tool surface (read, bash) | `tools/registry.go` |
 | Read tool and workspace path discipline | `tools/files.go` |
 | Shell tool | `tools/command.go` |
 | Runtime config + session manager | `runtime/session_manager.go`, `runtime/*.go` |

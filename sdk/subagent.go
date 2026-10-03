@@ -49,11 +49,10 @@ func (c SubAgentConfig) maxMidJobReports() int {
 // waits for the real terminal state (REQ-019, REQ-020, REQ-025 flow).
 type SubAgentRunner interface {
 	Delegate(context.Context, string) (string, error)
+	Message(context.Context, string, string) (string, error)
 	Status(string) string
 	Stop(context.Context, string) (string, error)
-	FollowUp(context.Context, string, string) (string, error)
-	Continue(context.Context, string, string) (string, error)
-	Accept(string, string) error
+	Result(string, string) (string, error)
 }
 
 const subAgentReportToolResultRunes = 1000
@@ -706,6 +705,32 @@ func (m *subAgentManager) statusText(parent *Session, id string) string {
 	return text
 }
 
+func (m *subAgentManager) result(parent *Session, id, verification string) (string, error) {
+	m.mu.Lock()
+	job := m.jobs[strings.TrimSpace(id)]
+	if job == nil || job.parent != parent {
+		m.mu.Unlock()
+		return "", errors.New("sdk: sub-agent job not found: " + strings.TrimSpace(id))
+	}
+	report := m.reportLocked(job)
+	if strings.TrimSpace(verification) == "" {
+		m.mu.Unlock()
+		return report, nil
+	}
+	if job.status != "completed" || !job.reviewed || job.accepted || job.superseded || strings.TrimSpace(verification) == "" {
+		m.mu.Unlock()
+		return report, errors.New("sdk: wait for the final report delivered automatically, then provide verified success before acceptance; failed/incomplete work needs follow-up")
+	}
+	if err := parent.acceptSubAgent(job); err != nil {
+		m.mu.Unlock()
+		return report, err
+	}
+	job.accepted = true
+	job.events = append(job.events, "Main accepted verified success: "+verification)
+	m.mu.Unlock()
+	return report + "\nVerified result accepted; the next plan step is now ready, if any.", nil
+}
+
 func (m *subAgentManager) SetEventSink(sink func(SubAgentEvent)) {
 	m.eventMu.Lock()
 	m.sink = sink
@@ -815,46 +840,46 @@ func (r *subAgentRunner) Stop(ctx context.Context, id string) (string, error) {
 	return r.manager.stop(ctx, r.parent, strings.TrimSpace(id))
 }
 
-func (r *subAgentRunner) FollowUp(ctx context.Context, id, task string) (string, error) {
+func (r *subAgentRunner) Message(ctx context.Context, id, message string) (string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return "", errors.New("sdk: follow-up job_id is required")
+		return "", errors.New("sdk: delegate message job_id is required")
 	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return r.manager.start(r.parent, task, id, Input{})
-}
-func (r *subAgentRunner) Continue(ctx context.Context, id, task string) (string, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return "", errors.New("sdk: continue job_id is required")
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", errors.New("sdk: delegate message is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	input, _ := ctx.Value(lifecycleInputKey{}).(Input)
-	return r.manager.startContinue(r.parent, task, id, input)
+	return r.manager.startContinue(r.parent, message, id, input)
 }
-func (r *subAgentRunner) Accept(id, verification string) error {
-	return r.manager.Accept(r.parent, id, verification)
+
+func (r *subAgentRunner) Result(id, verification string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", errors.New("sdk: delegate result job_id is required")
+	}
+	return r.manager.result(r.parent, id, verification)
 }
 
 type subAgentTool struct{ runner SubAgentRunner }
 
 func (t *subAgentTool) Definitions() []Tool {
 	return []Tool{
-		{Name: "follow_up_subagent", Description: "Retry or clarify a terminal, unaccepted job in the same worker session. Returns immediately with a new job id; progress and final reports arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "task": map[string]any{"type": "string"}}, "required": []string{"job_id", "task"}}},
-		{Name: "continue_subagent", Description: "Order new work into the same worker session of a terminal job, keeping its history. Returns immediately with a new job id; reports arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "task": map[string]any{"type": "string"}}, "required": []string{"job_id", "task"}}},
-		{Name: "accept_subagent_result", Description: "Explicitly accept verified success of the current plan step, advancing exactly one step. Verify against the final report that arrives automatically when the job ends.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "verification": map[string]any{"type": "string"}}, "required": []string{"job_id", "verification"}}},
-		{Name: "delegate_to_subagent", Description: "Assign one task to the worker and return control immediately with the job id. A progress report arrives every few completed worker tool calls for a scope check, and a complete handoff report arrives when the job ends.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"task": map[string]any{"type": "string"}}, "required": []string{"task"}}},
-		{Name: "stop_subagent", Description: "Stop a running worker job. Blocking: waits until the worker really stops and returns its final report (status stopped plus progress and tool history).", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
+		{Name: "delegate_task", Description: "Delegate a new task to the worker and return immediately with a job id. Progress and the final handoff report arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"task": map[string]any{"type": "string"}}, "required": []string{"task"}}},
+		{Name: "delegate_message", Description: "Send follow-on work to a completed worker job, reusing the same worker session and history. Returns immediately with a new job id.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "required": []string{"job_id", "message"}}},
+		{Name: "delegate_status", Description: "Return the current status, progress, worker session and tool history summary for a delegated job.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
+		{Name: "delegate_stop", Description: "Stop a running delegated job. Blocking: waits until the worker really stops and returns its final report.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
+		{Name: "delegate_result", Description: "Return the complete handoff report for a delegated job. Optionally provide verification evidence to explicitly accept a completed plan step.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "verification": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
 	}
 }
 func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 	result := ToolResult{ID: call.ID}
 	var input struct {
 		Task         string `json:"task"`
+		Message      string `json:"message"`
 		JobID        string `json:"job_id"`
 		Verification string `json:"verification"`
 	}
@@ -869,36 +894,26 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 		return result
 	}
 	switch call.Name {
-	case "follow_up_subagent":
-		id, err := t.runner.FollowUp(ctx, strings.TrimSpace(input.JobID), input.Task)
-		if err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
-		}
-		result.Content = "sub-agent follow-up started: " + id + " - progress and final reports will arrive automatically"
-		return result
-	case "continue_subagent":
-		id, err := t.runner.Continue(ctx, strings.TrimSpace(input.JobID), input.Task)
-		if err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
-		}
-		result.Content = "sub-agent continued in the same worker session: " + id + " - progress and final reports will arrive automatically"
-		return result
-	case "accept_subagent_result":
-		if err := t.runner.Accept(strings.TrimSpace(input.JobID), input.Verification); err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
-		}
-		result.Content = "Verified result accepted; the next plan step is now ready, if any."
-		return result
-	case "delegate_to_subagent":
+	case "delegate_task":
 		id, err := t.runner.Delegate(ctx, input.Task)
 		if err != nil {
 			result.Content = err.Error()
 			result.IsError = true
 			return result
 		}
-		result.Content = "sub-agent started: " + id + " - scope-check progress reports follow every few worker tool calls; the complete handoff report arrives when the job ends"
+		result.Content = "delegated task started: " + id + " - progress and final reports will arrive automatically"
 		return result
-	case "stop_subagent":
+	case "delegate_message":
+		id, err := t.runner.Message(ctx, strings.TrimSpace(input.JobID), input.Message)
+		if err != nil {
+			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
+		}
+		result.Content = "delegated follow-on message started: " + id + " - progress and final reports will arrive automatically"
+		return result
+	case "delegate_status":
+		result.Content = t.runner.Status(strings.TrimSpace(input.JobID))
+		return result
+	case "delegate_stop":
 		report, err := t.runner.Stop(ctx, strings.TrimSpace(input.JobID))
 		if err != nil {
 			result.Content = err.Error()
@@ -907,8 +922,17 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 		}
 		result.Content = report
 		return result
+	case "delegate_result":
+		report, err := t.runner.Result(strings.TrimSpace(input.JobID), input.Verification)
+		if err != nil {
+			result.Content = report + "\n" + err.Error()
+			result.IsError = true
+			return result
+		}
+		result.Content = report
+		return result
 	default:
-		result.Content = "unknown sub-agent operation"
+		result.Content = "unknown delegate operation"
 		result.IsError = true
 		return result
 	}
