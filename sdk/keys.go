@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"errors"
-	"net/http"
 	"strings"
 	"sync"
 )
@@ -44,18 +43,4 @@ func (p *KeyPool) Rotate() (string, error) {
 	}
 	p.current = (p.current + 1) % len(p.keys)
 	return p.keys[p.current], nil
-}
-
-// RetryableHTTPStatus reports whether a status is worth trying again as-is. The
-// refusals are excluded on purpose: a 401 is about the key and is answered by
-// rotating to another one rather than by repeating the request, and a 403 is
-// about the caller or the tier, which REQ-048(9) records as a verdict the
-// provider will repeat while every attempt spends the quota it is refusing.
-func RetryableHTTPStatus(status int) bool {
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
-		return false
-	default:
-		return true
-	}
 }

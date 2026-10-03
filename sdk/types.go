@@ -372,16 +372,6 @@ const (
 	AgentModeSub  AgentMode = "sub"
 )
 
-type RetryPolicy struct {
-	MaxAttempts    int
-	InitialBackoff time.Duration
-	MaxBackoff     time.Duration
-}
-
-func DefaultRetryPolicy() RetryPolicy {
-	return RetryPolicy{MaxAttempts: 3, InitialBackoff: 3 * time.Second, MaxBackoff: maxRetryCooldown}
-}
-
 type HTTPStatusError interface {
 	error
 	HTTPStatusCode() int
@@ -390,8 +380,6 @@ type RetryAfterError interface {
 	error
 	RetryAfter() time.Duration
 }
-
-func (r Request) RequestProvider() ProviderID { return ProviderID(r.Provider) }
 
 type ModelLister interface {
 	ListModels(context.Context, string) ([]Model, error)

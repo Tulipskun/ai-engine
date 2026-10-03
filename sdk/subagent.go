@@ -123,9 +123,9 @@ func (e SubAgentEvent) Message() string {
 		label = fmt.Sprintf("plan revision %d step %d", e.PlanRevision, e.PlanStep.Index)
 	}
 	if e.Kind == "progress" {
-		return fmt.Sprintf("<sub agent progress id %s>\n%s\nScope check required: compare this against the delegated task. If the worker is doing extra, missing, or wrong work, call `stop_subagent` (it blocks until stopped) then `follow_up_subagent` with the corrected task. If everything is on scope, reply briefly that work continues and stop calling tools; the next report arrives automatically.", e.JobID, e.Report)
+		return fmt.Sprintf("<sub agent progress id %s>\n%s\nScope check required: compare this against the delegated task. If the worker is doing extra, missing, or wrong work, call `delegate_stop` (it blocks until stopped) then `delegate_message` with this job id and the corrected task; if correct, reply briefly and stop calling tools so the next report arrives automatically.", e.JobID, e.Report)
 	}
-	return fmt.Sprintf("<sub agent report id %s> %s\n%s\nVerify the report against the delegated step, then call `accept_subagent_result` with evidence (planned steps) or use the findings directly (investigations). For failed, blocked, or incomplete work call `follow_up_subagent` with this job id; for new follow-on work call `continue_subagent` with this job id to keep the same worker session.", e.JobID, label, e.Report)
+	return fmt.Sprintf("<sub agent report id %s> %s\n%s\nVerify the report against the delegated step, then call `delegate_result` with this job id and verification evidence to accept a planned step (or use the findings directly for an investigation). For failed, blocked, or incomplete work call `delegate_message` with this job id to retry it in the same worker session; for new follow-on work in that session call `delegate_message` with this job id too.", e.JobID, label, e.Report)
 }
 
 type subAgentManager struct {
@@ -140,6 +140,33 @@ type subAgentManager struct {
 
 func newSubAgentManager(agent *Agent, cfg SubAgentConfig) *subAgentManager {
 	return &subAgentManager{jobs: make(map[string]*subAgentJob), agent: agent, cfg: cfg}
+}
+
+// followUp is the one call for "send more work into this worker session". It
+// picks the reservation that matches what the caller means: when the named job
+// is the one bound to the current plan step, the new job retries that step and
+// goes through start (which re-checks plan/step identity and rebinds the step);
+// otherwise it is follow-on work and attaches to the current ready step through
+// startContinue. Before this existed the retry branch of start was unreachable,
+// so a failed step had no recovery path at all (CHANGE-099).
+func (m *subAgentManager) followUp(parent *Session, task, id string, input Input) (string, error) {
+	id = strings.TrimSpace(id)
+	if m == nil || parent == nil {
+		return "", errors.New("sdk: sub-agent is not configured")
+	}
+	m.mu.Lock()
+	prev := m.jobs[id]
+	m.mu.Unlock()
+	if prev == nil || prev.parent != parent {
+		return "", errors.New("sdk: sub-agent job not found: " + id)
+	}
+	if prev.status == "running" {
+		return "", errors.New("sdk: sub-agent job is still running: " + id)
+	}
+	if parent.bindsCurrentStep(prev) {
+		return m.start(parent, task, prev.id, input)
+	}
+	return m.startContinue(parent, task, prev.id, input)
 }
 
 func (m *subAgentManager) start(parent *Session, task, previous string, input Input) (string, error) {
@@ -655,7 +682,7 @@ func (m *subAgentManager) reportLocked(job *subAgentJob) string {
 		b.WriteString(job.result)
 		b.WriteString("\n")
 	}
-	b.WriteString("This is the complete handoff report for the job. Verify it, then either accept the step with `accept_subagent_result` (verified success only), retry blocked/failed work with `follow_up_subagent`, or order new work into the same worker session with `continue_subagent`.")
+	b.WriteString("This is the complete handoff report for the job. Verify it, then either accept a verified step with `delegate_result`, or send more work into the same worker session with `delegate_message` (retrying this job when the step failed, adding follow-on work otherwise).")
 	return strings.TrimSpace(b.String())
 }
 
@@ -853,7 +880,7 @@ func (r *subAgentRunner) Message(ctx context.Context, id, message string) (strin
 		return "", err
 	}
 	input, _ := ctx.Value(lifecycleInputKey{}).(Input)
-	return r.manager.startContinue(r.parent, message, id, input)
+	return r.manager.followUp(r.parent, message, id, input)
 }
 
 func (r *subAgentRunner) Result(id, verification string) (string, error) {
@@ -869,7 +896,7 @@ type subAgentTool struct{ runner SubAgentRunner }
 func (t *subAgentTool) Definitions() []Tool {
 	return []Tool{
 		{Name: "delegate_task", Description: "Delegate a new task to the worker and return immediately with a job id. Progress and the final handoff report arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"task": map[string]any{"type": "string"}}, "required": []string{"task"}}},
-		{Name: "delegate_message", Description: "Send follow-on work to a completed worker job, reusing the same worker session and history. Returns immediately with a new job id.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "required": []string{"job_id", "message"}}},
+		{Name: "delegate_message", Description: "Send more work to an existing worker job, reusing the same worker session and history. Pass the id of the job bound to the current plan step to retry that step after it failed or was stopped, or the id of an earlier job to add follow-on work. Returns immediately with a new job id whose progress and final reports arrive automatically.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "required": []string{"job_id", "message"}}},
 		{Name: "delegate_status", Description: "Return the current status, progress, worker session and tool history summary for a delegated job.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
 		{Name: "delegate_stop", Description: "Stop a running delegated job. Blocking: waits until the worker really stops and returns its final report.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
 		{Name: "delegate_result", Description: "Return the complete handoff report for a delegated job. Optionally provide verification evidence to explicitly accept a completed plan step.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"job_id": map[string]any{"type": "string"}, "verification": map[string]any{"type": "string"}}, "required": []string{"job_id"}}},
@@ -965,10 +992,4 @@ func (m *subAgentManager) runningJobID() string {
 		}
 	}
 	return ""
-}
-
-// startAndRegister starts a job without waiting; tests use it to exercise
-// stop/overlap paths that the async API also exposes, deterministically.
-func (m *subAgentManager) startAndRegister(parent *Session, task string) (string, error) {
-	return m.start(parent, task, "", Input{})
 }

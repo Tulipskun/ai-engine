@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Tulipskun/ai-engine/sdk"
@@ -72,6 +73,26 @@ func LoadProviderFile(path string) (ProviderFileConfig, error) {
 		p.APIKeys = keys
 	}
 	return config, nil
+}
+
+// SaveProviderFile is the single writer for config/provider.json. The phone's
+// admin surface goes through it so the mkdir/chmod/write rules cannot drift
+// between the two callers that used to spell them out separately (CHANGE-099).
+func SaveProviderFile(path string, config ProviderFileConfig) error {
+	if path == "" {
+		return errors.New("runtime: provider config path is required")
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("runtime: encode provider config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("runtime: create provider config directory: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("runtime: write provider config %q: %w", path, err)
+	}
+	return nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

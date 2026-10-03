@@ -2,9 +2,7 @@ package sdk
 
 import (
 	"context"
-	"errors"
 	"strings"
-	"time"
 )
 
 type KeyedProvider interface {
@@ -134,51 +132,6 @@ func (c *RouterClient) Generate(ctx context.Context, session *Session, req Reque
 		return Response{}, err
 	}
 	return resp, nil
-}
-func retryable(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	var statusErr HTTPStatusError
-	if errors.As(err, &statusErr) {
-		return RetryableHTTPStatus(statusErr.HTTPStatusCode())
-	}
-	return true
-}
-func sleepBackoff(ctx context.Context, p RetryPolicy, attempt int, err error) error {
-	d := p.InitialBackoff
-	if d <= 0 {
-		d = 3 * time.Second
-	}
-	maxWait := p.MaxBackoff
-	if maxWait <= 0 {
-		maxWait = maxRetryCooldown
-	}
-	for i := 1; i < attempt; i++ {
-		d *= 2
-		if d >= maxWait {
-			d = maxWait
-			break
-		}
-	}
-	if d > maxWait {
-		d = maxWait
-	}
-	if isRateLimitError(err) {
-		if ra, ok := err.(RetryAfterError); ok {
-			if rd := ra.RetryAfter(); rd > 0 && rd <= maxRetryCooldown {
-				d = rd
-			}
-		}
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
 }
 func (c *RouterClient) GenerateTurn(ctx context.Context, session *Session, user Turn, req Request) (Response, error) {
 	before := session.History()
