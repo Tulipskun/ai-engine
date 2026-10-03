@@ -931,7 +931,10 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 		}
 		result.Content = report
 		return result
-
+	default:
+		result.Content = "unknown delegate operation"
+		result.IsError = true
+		return result
 	}
 }
 
