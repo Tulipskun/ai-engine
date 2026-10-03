@@ -28,7 +28,7 @@ delegating investigation blindly. Thinking stays in the main context
   results, known limitations), Acceptance criteria. Verify the returned
   work package against the evidence (spot-check by reading files if
   needed); accept only with verification evidence via
-  `accept_subagent_result`. Verify, don't trust.
+  `delegate_result`. Verify, don't trust.
 
 ## Ordered checklist per task
 
@@ -47,7 +47,7 @@ repeated once its outcome is proven.
 
 ## Tool budget declaration per delegation
 
-Every `delegate_to_subagent` / `follow_up_subagent` / `continue_subagent`
+Every `delegate_task` / `delegate_message` / `delegate_message`
 task states its budget explicitly, for example:
 
 ```text
