@@ -13,7 +13,12 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 ```text
 .
 ├── bin/               empty placeholder (reserved install target)
-├── cmd/ai-engine/     daemon entry + wiring: state root, gateway, admin store
+├── cmd/ai-engine/
+│   ├── main.go       entry point: state root, assemble, open WS + tunnel, run
+│   ├── io.go         input/output boundary: WS events ↔ sdk.Input/Output, D1 mirrors
+│   ├── agent.go      agent construction, system prompts, AGENTS.md, workspace root
+│   ├── mobile.go     gateway wiring: D1 client, tunnel, hydrate/push, stores
+│   └── admin_store.go  phone write surface for providers, keys and agent settings
 ├── sdk/               provider-neutral Agent runtime, sessions, orchestration
 │   ├── providers/     wire adapters: openai (canonical), anthropic, gemini, opencode
 │   └── providers/internal/  shared provider HTTP (JSON + SSE, default User-Agent)
@@ -45,6 +50,8 @@ requirements plus `requirements/changes.md` when behavior or spec changed.
 | Runtime config load/save, session manager | `runtime/system_config.go`, `runtime/provider_config.go`, `runtime/session_manager.go`, `runtime/config_test.go` |
 | Stateless runtime state ↔ Cloudflare D1 | `runtime/d1store/client.go`, `runtime/d1store/sync.go` |
 | Mobile gateway (AIxodia, the only transport) + auth gate | `transport/mobile/gateway.go`, `transport/mobile/auth.go`, `transport/mobile/auth_test.go`, `transport/mobile/tunnel.go`, `transport/mobile/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `transport/mobile/admin.go` (provider/key pool + agent settings ที่มือถือจัดการ), `cmd/ai-engine/mobile.go` |
+| Inbound/outbound boundary between WS and canonical turns | `cmd/ai-engine/io.go` (`mobileIO`: WS → `sdk.Input`, `sdk.Output` → frames, D1 mirror ทั้งสองทาง) |
+| Agent construction, system prompts, workspace root | `cmd/ai-engine/agent.go` |
 | Phone-owned provider keys + per-agent routes (file ↔ D1) | `cmd/ai-engine/admin_store.go`, `runtime/provider_manager.go` (Reload/Rt/RefreshProvider) |
 
 ## Key files (what each owns)
@@ -108,8 +115,9 @@ through `transport/mobile/generation.go`.
   file; keep the change in the owning module (no cross-module refactors).
 - Provider / catalogue / retry issue: `sdk/router_client.go` +
   `sdk/routing.go` + `sdk/providers/<adapter>/`.
-- Daemon start / gateway / tunnel / D1 hydration: `cmd/ai-engine/main.go`,
-  `cmd/ai-engine/mobile.go`, `transport/mobile/`, `runtime/d1store/`.
+- Daemon start / gateway / tunnel / D1 hydration: `cmd/ai-engine/main.go`
+  (entry point), `cmd/ai-engine/mobile.go`, `transport/mobile/`, `runtime/d1store/`.
+- Inbound WS event or outbound frame / D1 mirroring: `cmd/ai-engine/io.go`.
 - Session persist / workspace / settings: `sdk/session_db.go` +
   `sdk/session_settings.go` + `runtime/session_manager.go`.
 - Config or state that must come from D1 instead of disk: `runtime/d1store/`

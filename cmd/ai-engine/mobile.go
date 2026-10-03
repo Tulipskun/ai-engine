@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Tulipskun/ai-engine/runtime"
@@ -42,16 +41,6 @@ type mobileRuntime struct {
 
 	// sessions applies a phone's provider/model choice to a live chat.
 	sessions *runtime.SessionManager
-
-	turns turnMirror
-
-	// mirrorGates serializes one session's D1 mirrors so rows always land
-	// user-before-answer. The user mirror runs in a goroutine while the turn
-	// runs; without the gate a fast turn's answer can steal the lower seq and
-	// the phone (which numbers its pending row from its own counter) drops the
-	// answer on a seq collision it can never recover from.
-	mirrorMu    sync.Mutex
-	mirrorGates map[string]chan struct{}
 }
 
 type runtimeMobileConfig struct {
@@ -109,7 +98,6 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 		// The build label travels into the D1 nodes row, so the phone's daemon
 		// card and a D1 query both name the build that is actually serving.
 		Version:      version,
-		MirrorInput:  rt.mirrorUserTurn,
 		Listen:       cfg.listen,
 		PublicListen: cfg.publicListen,
 		Tunnel:       cfg.tunnel,
@@ -661,161 +649,6 @@ func (m *mobileRuntime) PushState(ctx context.Context) {
 			log.Printf("mobile: session too large for D1, kept local: %s", strings.Join(report.SkippedOversize, ", "))
 		}
 	}
-}
-
-// PublishOutput mirrors a finished turn into D1 and then sends it to the
-// phones watching that session, so the phone can rebuild the thread after the
-// app was closed (REQ-046(5)). D1 is written FIRST: the phone refreshes
-// from D1 the moment the done frame arrives, so a display-before-mirror order
-// makes the streamed answer vanish for a race window (AXCH-025).
-func (m *mobileRuntime) PublishOutput(ctx context.Context, output sdk.Output) {
-	if m == nil || m.transport == nil {
-		return
-	}
-	if output.Trace != nil && strings.EqualFold(output.Metadata["trace_actor"], "subagent") {
-		return
-	}
-	text := mobiletransport.FinalText(output)
-	if output.SessionID == "" || text == "" {
-		return
-	}
-	// One turn in D1 per turn on the wire. The same answer is reported twice for
-	// some providers: once as the content event and again on the terminal one,
-	// so the second report only clears the bookkeeping.
-	terminal := output.Trace != nil && output.Trace.Stage == sdk.TraceResponse
-	key := output.SessionID + "\x00" + text
-	if !m.turns.take(key, terminal) {
-		return
-	}
-	jobID := output.Metadata["mobile_job_id"]
-	// Wait for this turn's user row first: D1 numbers rows MAX+1, so an answer
-	// that lands before its user row steals the lower seq and scrambles the
-	// order every client reconstructs. On timeout the answer still goes out
-	// (and says so in the log) rather than holding the turn hostage to D1.
-	m.waitUserMirror(output.SessionID)
-	// The footer is read off the terminal trace: the model that answered, the
-	// counts it reported (including cached usage) and how long it took (AX-095).
-	var meta d1store.TurnMeta
-	usage := output.Response.Usage
-	if output.Trace != nil {
-		if output.Trace.Response != nil {
-			meta.Model = output.Trace.Response.Model
-			usage = output.Trace.Response.Usage
-		}
-		if output.Trace.RequestStartedMs > 0 && output.Trace.AtMs >= output.Trace.RequestStartedMs {
-			meta.DurationMs = output.Trace.AtMs - output.Trace.RequestStartedMs
-		} else {
-			meta.DurationMs = output.Trace.Elapsed.Milliseconds()
-		}
-	}
-	meta.InputTokens = usage.InputTokens
-	meta.OutputTokens = usage.OutputTokens
-	meta.CacheRead = usage.CacheReadTokens
-	meta.CacheWrite = usage.CacheWriteTokens
-	meta.ReasoningTokens = usage.ReasoningTokens
-	meta.InputIncludesCache = usage.InputIncludesCache
-	seq, err := m.client.AppendModelTurn(ctx, output.SessionID, "main", jobID, text, meta)
-	if err != nil {
-		log.Printf("mobile: mirror turn to D1 session=%s: %v", output.SessionID, err)
-		m.turns.forget(key)
-		return
-	}
-	log.Printf("mobile: mirrored answer session=%s seq=%d model=%s in=%d out=%d ms=%d",
-		output.SessionID, seq, meta.Model, meta.InputTokens, meta.OutputTokens, meta.DurationMs)
-	if err := m.transport.Display(ctx, output); err != nil {
-		log.Printf("mobile: display source=%s session=%s: %v", output.Source, output.SessionID, err)
-	}
-}
-
-// turnMirror keeps one D1 row per finished turn. The sdk reports the same answer
-// twice for some providers (a content event, then the terminal one), and a later
-// turn may legitimately repeat the same text, so the key is cleared as soon as
-// the terminal event has had its say.
-type turnMirror struct {
-	mu   sync.Mutex
-	seen map[string]bool
-}
-
-func (m *turnMirror) take(key string, terminal bool) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.seen == nil {
-		m.seen = map[string]bool{}
-	}
-	if m.seen[key] {
-		if terminal {
-			delete(m.seen, key)
-		}
-		return false
-	}
-	m.seen[key] = true
-	if terminal {
-		delete(m.seen, key)
-	}
-	return true
-}
-
-func (m *turnMirror) forget(key string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.seen, key)
-}
-
-func (m *mobileRuntime) mirrorUserTurn(input sdk.Input) func(context.Context) error {
-	if m == nil || m.client == nil || input.SessionID == "" {
-		return nil
-	}
-	text := inputText(input)
-	if text == "" {
-		return nil
-	}
-	return func(ctx context.Context) error {
-		gate := make(chan struct{})
-		m.mirrorMu.Lock()
-		if m.mirrorGates == nil {
-			m.mirrorGates = map[string]chan struct{}{}
-		}
-		m.mirrorGates[input.SessionID] = gate
-		m.mirrorMu.Unlock()
-		seq, err := m.client.AppendTurnAt(ctx, input.SessionID, "user", "user", "", text)
-		m.mirrorMu.Lock()
-		if m.mirrorGates[input.SessionID] == gate {
-			delete(m.mirrorGates, input.SessionID)
-		}
-		m.mirrorMu.Unlock()
-		close(gate)
-		if err != nil {
-			return err
-		}
-		log.Printf("mobile: mirrored user turn session=%s seq=%d", input.SessionID, seq)
-		return nil
-	}
-}
-
-// waitUserMirror blocks until this session's user row has landed, so the
-// answer mirror that follows cannot take its seq. A newer turn replaces the
-// gate, so waiting on a stale one is impossible: PublishOutput always reads
-// the current gate after the turn that produced it.
-func (m *mobileRuntime) waitUserMirror(sessionID string) {
-	m.mirrorMu.Lock()
-	gate := m.mirrorGates[sessionID]
-	m.mirrorMu.Unlock()
-	if gate == nil {
-		return
-	}
-	select {
-	case <-gate:
-	case <-time.After(30 * time.Second):
-		log.Printf("mobile: user mirror still pending for session=%s; mirroring answer anyway", sessionID)
-	}
-}
-
-func inputText(input sdk.Input) string {
-	var b strings.Builder
-	for _, part := range input.Turn.Content {
-		b.WriteString(part.Text)
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // sessionDBName mirrors sdk.SessionDBPath naming for the sync layer.

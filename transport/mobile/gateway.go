@@ -178,6 +178,16 @@ func (t *Transport) SetAdminStore(store AdminStore) {
 	t.cfg.Admin = store
 }
 
+// SetInputMirror attaches the hook that records an accepted inbound turn. It is
+// separate from New because the mirror lives in the daemon's io layer, which is
+// built once the transport and its D1 client both exist.
+func (t *Transport) SetInputMirror(mirror func(sdk.Input) func(context.Context) error) {
+	if t == nil {
+		return
+	}
+	t.cfg.MirrorInput = mirror
+}
+
 // SetErrorReporter attaches the hook that shows a failed turn on the phone, so
 // a provider that refuses the request (a dead key, a free tier that only works
 // inside another app) is visible instead of a silent retry.

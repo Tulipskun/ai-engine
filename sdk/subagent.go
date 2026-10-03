@@ -587,9 +587,6 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (Resp
 	} else {
 		prompt += "\n\nInvestigation mode: inspect the repository and return only the requested findings. Do not modify the project unless the investigation task explicitly requires it."
 	}
-	if requirements := projectRequirements(workspace); requirements != "" {
-		prompt += "\n\nProject requirements from the repository:\n" + requirements
-	}
 	workerAgent := &Agent{Client: m.agent.Client, Tools: m.agent.Tools, MaxRetries: m.agent.MaxRetries, DisablePlanning: true, SubAgentConfig: SubAgentConfig{Enabled: false}}
 	req := Request{Provider: ProviderID(provider), Model: model, SystemPrompt: prompt}
 	if m.cfg.MaxOutputTokens > 0 {
