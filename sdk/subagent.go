@@ -895,7 +895,7 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 	}
 	switch call.Name {
 	case "delegate_message":
-		id, err := t.runner.FollowUp(ctx, strings.TrimSpace(input.JobID), input.Task)
+		id, err := t.runner.Message(ctx, strings.TrimSpace(input.JobID), input.Message)
 		if err != nil {
 			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
 		}
