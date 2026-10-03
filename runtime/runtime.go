@@ -29,28 +29,31 @@ func Load(path string) (*Runtime, error) {
 	router := sdk.NewRouter()
 	client := sdk.NewRouterClient(router)
 	providers := make([]sdk.ProviderID, 0, len(configs))
-	registeredAdapters := make(map[sdk.AdapterID]bool)
 	for _, config := range configs {
 		router.RegisterProvider(config)
 		providers = append(providers, config.ID)
-		if registeredAdapters[config.Adapter] {
-			continue
+		adapter, err := newAdapter(config.Adapter)
+		if err != nil {
+			return nil, err
 		}
-		switch config.Adapter {
-		case sdk.AdapterOpenAI:
-			client.RegisterAdapter(config.Adapter, openai.New(""))
-		case sdk.AdapterAnthropic:
-			client.RegisterAdapter(config.Adapter, anthropic.New(""))
-		case sdk.AdapterGemini:
-			client.RegisterAdapter(config.Adapter, gemini.New(""))
-		case sdk.AdapterOpenCode:
-			client.RegisterAdapter(config.Adapter, opencode.New(""))
-		default:
-			return nil, fmt.Errorf("runtime: unsupported adapter %q", config.Adapter)
-		}
-		registeredAdapters[config.Adapter] = true
+		client.RegisterAdapter(config.ID, config.Adapter, adapter)
 	}
 	return &Runtime{Router: router, Client: client, Providers: providers, ProviderConfigs: configs}, nil
+}
+
+func newAdapter(id sdk.AdapterID) (sdk.Provider, error) {
+	switch id {
+	case sdk.AdapterOpenAI:
+		return openai.New(""), nil
+	case sdk.AdapterAnthropic:
+		return anthropic.New(""), nil
+	case sdk.AdapterGemini:
+		return gemini.New(""), nil
+	case sdk.AdapterOpenCode:
+		return opencode.New(""), nil
+	default:
+		return nil, fmt.Errorf("runtime: unsupported adapter %q", id)
+	}
 }
 
 func (r *Runtime) RefreshModels(ctx context.Context) error {

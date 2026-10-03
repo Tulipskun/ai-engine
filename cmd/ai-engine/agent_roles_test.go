@@ -68,7 +68,7 @@ func TestDelegatedWorkerRetainsRealToolsAndContext(t *testing.T) {
 			router.Register(sdk.ModelRoute{Provider: "test", Model: "model", Adapter: sdk.AdapterOpenAI})
 			client := sdk.NewRouterClient(router)
 			provider := &roleCaptureProvider{workerRequests: make(chan sdk.Request, 4)}
-			client.RegisterAdapter(sdk.AdapterOpenAI, provider)
+			client.RegisterAdapter("test", sdk.AdapterOpenAI, provider)
 			state := t.TempDir()
 			customPrompt := "Custom worker context. Use read to inspect only the assigned file.\nAvailable tools:\nkeep this custom tail"
 			if custom {

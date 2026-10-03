@@ -13,7 +13,7 @@ func TestCancelTurnStopsTheTurnInFlight(t *testing.T) {
 	router := NewRouter()
 	router.Register(ModelRoute{Provider: ProviderOpenRouter, Model: "model", Adapter: AdapterOpenAI})
 	client := NewRouterClient(router)
-	client.RegisterAdapter(AdapterOpenAI, blockingProvider{started: started, once: &sync.Once{}})
+	client.RegisterAdapter(ProviderOpenRouter, AdapterOpenAI, blockingProvider{started: started, once: &sync.Once{}})
 	session := NewSession(SessionConfig{ID: "work-1", Provider: ProviderOpenRouter, Model: "model"}, NewKeyPool("k"))
 	loop := &HarnessLoop{
 		Client:         client,

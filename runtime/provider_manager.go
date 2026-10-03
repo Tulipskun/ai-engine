@@ -125,7 +125,7 @@ func (m *ProviderManager) Upsert(ctx context.Context, name, adapter, endpoint, a
 	if err := m.persist(file); err != nil {
 		return err
 	}
-	if err := m.ensureAdapter(selected.Adapter); err != nil {
+	if err := m.ensureAdapter(selected.ID, selected.Adapter); err != nil {
 		return err
 	}
 	m.rt.Router.RegisterProvider(selected)
@@ -159,7 +159,7 @@ func (m *ProviderManager) Reload(ctx context.Context) ([]sdk.ProviderConfig, err
 	defer m.mu.Unlock()
 	loaded := make([]sdk.ProviderConfig, 0, len(configs))
 	for _, config := range configs {
-		if err := m.ensureAdapter(config.Adapter); err != nil {
+		if err := m.ensureAdapter(config.ID, config.Adapter); err != nil {
 			return nil, err
 		}
 		m.rt.Router.RegisterProvider(config)
@@ -177,19 +177,19 @@ func (m *ProviderManager) Reload(ctx context.Context) ([]sdk.ProviderConfig, err
 	return loaded, nil
 }
 
-func (m *ProviderManager) ensureAdapter(id sdk.AdapterID) error {
-	if _, ok := m.rt.Client.Adapters[id]; ok {
+func (m *ProviderManager) ensureAdapter(provider sdk.ProviderID, id sdk.AdapterID) error {
+	if _, ok := m.rt.Client.Adapters[sdk.AdapterBinding{Provider: provider, Adapter: id}]; ok {
 		return nil
 	}
 	switch id {
 	case sdk.AdapterOpenAI:
-		m.rt.Client.RegisterAdapter(id, openai.New(""))
+		m.rt.Client.RegisterAdapter(provider, id, openai.New(""))
 	case sdk.AdapterAnthropic:
-		m.rt.Client.RegisterAdapter(id, anthropic.New(""))
+		m.rt.Client.RegisterAdapter(provider, id, anthropic.New(""))
 	case sdk.AdapterGemini:
-		m.rt.Client.RegisterAdapter(id, gemini.New(""))
+		m.rt.Client.RegisterAdapter(provider, id, gemini.New(""))
 	case sdk.AdapterOpenCode:
-		m.rt.Client.RegisterAdapter(id, opencode.New(""))
+		m.rt.Client.RegisterAdapter(provider, id, opencode.New(""))
 	default:
 		return fmt.Errorf("runtime: unsupported adapter %q", id)
 	}

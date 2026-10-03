@@ -16,21 +16,35 @@ type HeaderedProvider interface {
 	WithHeaders(map[string]string) Provider
 }
 type RouterClient struct {
-	Router   *Router
-	Adapters map[AdapterID]Provider
+	Router *Router
+	// Adapters binds one adapter instance per provider, keyed by provider AND
+	// adapter (opencode-style provider separation): instances are never shared
+	// across providers, so two providers on the same wire format (e.g. two
+	// OpenAI-compatible endpoints, or opencode Zen vs a generic gateway) cannot
+	// leak BaseURL/headers/discovery state into each other. Per-request
+	// settings (key, base URL, headers) are still applied on a copy.
+	Adapters map[AdapterBinding]Provider
+}
+
+// AdapterBinding identifies one adapter instance owned by one provider.
+type AdapterBinding struct {
+	Provider ProviderID
+	Adapter  AdapterID
 }
 
 func NewRouterClient(router *Router) *RouterClient {
-	return &RouterClient{Router: router, Adapters: make(map[AdapterID]Provider)}
+	return &RouterClient{Router: router, Adapters: make(map[AdapterBinding]Provider)}
 }
-func (c *RouterClient) RegisterAdapter(id AdapterID, p Provider) { c.Adapters[id] = p }
+func (c *RouterClient) RegisterAdapter(provider ProviderID, id AdapterID, p Provider) {
+	c.Adapters[AdapterBinding{Provider: provider, Adapter: id}] = p
+}
 func (c *RouterClient) providerFor(session *Session, model string) (Provider, ModelRoute, error) {
 	provider := session.Config().Provider
 	route, err := c.Router.Resolve(provider, model)
 	if err != nil && strings.Contains(err.Error(), "model catalogue for provider=") {
 		adapterConfig, configErr := c.Router.Provider(provider)
 		if configErr == nil {
-			if _, ok := c.Adapters[adapterConfig.Adapter]; ok {
+			if _, ok := c.Adapters[AdapterBinding{Provider: provider, Adapter: adapterConfig.Adapter}]; ok {
 				if refreshErr := c.RefreshModels(context.Background(), provider); refreshErr == nil {
 					route, err = c.Router.Resolve(provider, model)
 				} else {
@@ -42,7 +56,7 @@ func (c *RouterClient) providerFor(session *Session, model string) (Provider, Mo
 	if err != nil {
 		return nil, ModelRoute{}, err
 	}
-	p, ok := c.Adapters[route.Adapter]
+	p, ok := c.Adapters[AdapterBinding{Provider: route.Provider, Adapter: route.Adapter}]
 	if !ok {
 		return nil, ModelRoute{}, &RouteError{Provider: route.Provider, Model: route.Model, Adapter: route.Adapter}
 	}
@@ -82,7 +96,7 @@ func (c *RouterClient) RefreshModels(ctx context.Context, provider ProviderID) e
 	if err != nil {
 		return err
 	}
-	adapter, ok := c.Adapters[config.Adapter]
+	adapter, ok := c.Adapters[AdapterBinding{Provider: provider, Adapter: config.Adapter}]
 	if !ok {
 		return &RouteError{Provider: provider, Adapter: config.Adapter}
 	}

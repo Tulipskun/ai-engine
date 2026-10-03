@@ -30,7 +30,7 @@ func TestRouterClientRequestSettingsOverrideSessionDefaults(t *testing.T) {
 	r.Register(ModelRoute{Provider: ProviderOpenRouter, Model: "request-model", Adapter: AdapterOpenAI})
 	adapter := &settingsCaptureAdapter{name: "openai"}
 	c := NewRouterClient(r)
-	c.RegisterAdapter(AdapterOpenAI, adapter)
+	c.RegisterAdapter(ProviderOpenRouter, AdapterOpenAI, adapter)
 	temperature := 0.2
 	session := NewSession(SessionConfig{ID: "s1", Provider: ProviderOpenRouter, Model: "session-model", Temperature: &temperature, ThinkingLevel: ThinkingLow}, NewKeyPool("key"))
 
@@ -55,7 +55,7 @@ func TestRouterClientUsesSessionSettingsWhenRequestOmitsThem(t *testing.T) {
 	r.Register(ModelRoute{Provider: ProviderOpenRouter, Model: "session-model", Adapter: AdapterOpenAI})
 	adapter := &settingsCaptureAdapter{name: "openai"}
 	c := NewRouterClient(r)
-	c.RegisterAdapter(AdapterOpenAI, adapter)
+	c.RegisterAdapter(ProviderOpenRouter, AdapterOpenAI, adapter)
 	temperature := 0.3
 	session := NewSession(SessionConfig{ID: "s1", Provider: ProviderOpenRouter, Model: "session-model", Temperature: &temperature, ThinkingLevel: ThinkingMedium}, NewKeyPool("key"))
 

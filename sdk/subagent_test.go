@@ -238,7 +238,7 @@ func newSubAgentTest(t *testing.T, provider Provider) (*Agent, *Session) {
 	r.RegisterProvider(ProviderConfig{ID: "test", BaseURL: "http://test", Keys: keys, Adapter: AdapterOpenAI})
 	r.Register(ModelRoute{Provider: "test", Model: "model", Adapter: AdapterOpenAI})
 	client := NewRouterClient(r)
-	client.RegisterAdapter(AdapterOpenAI, provider)
+	client.RegisterAdapter("test", AdapterOpenAI, provider)
 	db, err := OpenSessionDB(t.TempDir() + "/parent.db")
 	if err != nil {
 		t.Fatal(err)

@@ -50,7 +50,7 @@ func rotatingSession(t *testing.T, refuseFirst int, keys ...string) (*Agent, *ke
 	r.RegisterProvider(ProviderConfig{ID: "test", BaseURL: "http://test", Keys: pool, Adapter: AdapterOpenAI})
 	r.Register(ModelRoute{Provider: "test", Model: "model", Adapter: AdapterOpenAI})
 	c := NewRouterClient(r)
-	c.RegisterAdapter(AdapterOpenAI, keyWatching{inner: p})
+	c.RegisterAdapter("test", AdapterOpenAI, keyWatching{inner: p})
 	s := NewSession(SessionConfig{ID: "s", Provider: "test", Model: "model", KeyIndex: 0}, pool)
 	return &Agent{Client: c, Tools: &agentTestTools{}, MaxRetries: 6, DisablePlanning: true}, p, s
 }
@@ -108,7 +108,7 @@ func TestRotationStopsOnceEveryKeyHasBeenTried(t *testing.T) {
 func TestAForbiddenRequestIsNotRetriedOnAnotherKey(t *testing.T) {
 	a, _, s := rotatingSession(t, 0, "live-1", "live-2")
 	forbidAll := &forbiddingProvider{}
-	a.Client.RegisterAdapter(AdapterOpenAI, forbidAll)
+	a.Client.RegisterAdapter("test", AdapterOpenAI, forbidAll)
 	_, err := a.RunTurn(context.Background(), s, Turn{Role: RoleUser, Content: []ContentPart{{Type: ContentText, Text: "hi"}}}, Request{})
 	if err == nil {
 		t.Fatal("a forbidden request was reported as a success")

@@ -311,7 +311,7 @@ func TestSubAgentConcurrentFollowUpReservation(t *testing.T) {
 	}
 	awaitReport(t, events, "final")
 	p := &subAgentBlockingProvider{started: make(chan struct{})}
-	r.manager.agent.Client.RegisterAdapter(AdapterOpenAI, p)
+	r.manager.agent.Client.RegisterAdapter("test", AdapterOpenAI, p)
 	var wg sync.WaitGroup
 	ids := make(chan string, 16)
 	for i := 0; i < 16; i++ {

@@ -1355,3 +1355,16 @@ Impact: ลบ `deploy/` ทั้งโฟลเดอร์, ลบ `.github/w
 Validation: `grep -ri kaggle` ในโค้ดและเอกสารของ repo ไม่เหลือนอกจากบันทึกใน
 changes.md ซึ่งเป็นประวัติที่ append-only แล้ว; `go build ./...` และ `go test ./...` ผ่าน
 Status: accepted
+
+CHANGE-096
+
+Date: 2026-10-03
+Type: revise
+Request: ดูที่ repo ai-engine ปรับให้เมื่อรัน bin ปรับให้ agent router แยกเป็น provider เหมือนกับ opencode
+Conflict: REQ-006 (adapter isolation) และ CON-005 (ห้ามแก้ shared adapter configuration) — พฤติกรรมเดิมแชร์ adapter instance เดียวต่อ AdapterID ข้ามทุก provider ทำให้ provider ต่าง endpoint/key กันยังใช้ instance เดียวกัน
+Previous: `sdk.RouterClient.Adapters` เป็น `map[AdapterID]Provider`; `runtime.Load` ลงทะเบียน adapter ครั้งเดียวต่อ adapter (`registeredAdapters`) และ `ProviderManager.ensureAdapter(adapter)` ข้าม provider ที่ใช้ adapter ซ้ำ
+New: `sdk.RouterClient.Adapters` เป็น `map[AdapterBinding]Provider` โดย `AdapterBinding{Provider, Adapter}` (แยก instance ต่อ provider แบบ opencode — แต่ละ provider entry เป็นเจ้าของ endpoint/keys/adapter ของตัวเอง); `runtime.Load` สร้าง adapter ใหม่ต่อ provider ผ่าน `newAdapter` (รวม `opencode`) และ `RegisterAdapter(provider, adapter, instance)`; `ProviderManager.Upsert/Reload/ensureAdapter(provider, adapter)` ผูก binding ต่อ provider; เพิ่ม `TestRouterClientKeepsOneAdapterPerProvider` กัน response รั่วข้าม provider
+Reason: สอง provider ที่ใช้ wire format เดียวกัน (เช่น OpenAI-compatible สอง endpoint, หรือ opencode Zen เทียบกับ gateway ทั่วไป) ต้องไม่แชร์ discovery state/BaseURL/headers กัน; instance ต่อ provider ทำให้ `bin/ai-engine` (daemon) route ถูก provider เสมอเหมือนโมเดล provider ของ opencode และตรงกับ REQ-006/CON-005
+Impact: sdk/router_client.go (AdapterBinding + lookup/refresh), runtime/runtime.go (newAdapter + per-provider register), runtime/provider_manager.go (ensureAdapter ต่อ provider), sdk/router_client_test.go + callers/tests ที่ใช้ RegisterAdapter (agent/loop/key_rotation/subagent/session_settings/agent_roles)
+Validation: `go test ./... -count=1`; `go vet ./...`; `go build -o bin/ai-engine ./cmd/ai-engine`; `bin/ai-engine --version` และบูต daemon จาก local copy ได้
+Status: accepted

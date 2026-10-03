@@ -57,9 +57,9 @@ func TestRouterClientDispatchesRequestedRoutes(t *testing.T) {
 	r.Register(ModelRoute{Provider: ProviderOpenRouter, Model: "gemini-3.5", Adapter: AdapterGemini})
 	r.Register(ModelRoute{Provider: ProviderOpenCode, Model: "opus", Adapter: AdapterAnthropic})
 	c := NewRouterClient(r)
-	c.RegisterAdapter(AdapterOpenAI, &fakeAdapter{name: "openai"})
-	c.RegisterAdapter(AdapterGemini, &fakeAdapter{name: "gemini"})
-	c.RegisterAdapter(AdapterAnthropic, &fakeAdapter{name: "anthropic"})
+	c.RegisterAdapter(ProviderOpenRouter, AdapterOpenAI, &fakeAdapter{name: "openai"})
+	c.RegisterAdapter(ProviderOpenRouter, AdapterGemini, &fakeAdapter{name: "gemini"})
+	c.RegisterAdapter(ProviderOpenCode, AdapterAnthropic, &fakeAdapter{name: "anthropic"})
 	pool := NewKeyPool("or-1", "or-2", "oc-1")
 	cases := []SessionConfig{{ID: "s1", Provider: ProviderOpenRouter, Model: "gpt-5", KeyIndex: 0}, {ID: "s2", Provider: ProviderOpenRouter, Model: "gemini-3.5", KeyIndex: 1}, {ID: "s3", Provider: ProviderOpenCode, Model: "opus", KeyIndex: 2}}
 	for _, cfg := range cases {
@@ -79,7 +79,7 @@ func TestRouterClientRefreshesStaleCatalogue(t *testing.T) {
 	r.RegisterProvider(ProviderConfig{ID: ProviderOpenRouter, Adapter: AdapterOpenAI, Keys: pool})
 	c := NewRouterClient(r)
 	adapter := &fakeAdapter{name: "openai"}
-	c.RegisterAdapter(AdapterOpenAI, adapter)
+	c.RegisterAdapter(ProviderOpenRouter, AdapterOpenAI, adapter)
 	session := NewSession(SessionConfig{ID: "catalogue-refresh", Provider: ProviderOpenRouter, Model: "discovered-model"}, pool)
 	resp, err := c.Generate(context.Background(), session, Request{})
 	if err != nil {
@@ -93,12 +93,35 @@ func TestRouterClientRefreshesStaleCatalogue(t *testing.T) {
 	}
 }
 
+func TestRouterClientKeepsOneAdapterPerProvider(t *testing.T) {
+	r := NewRouter()
+	r.Register(ModelRoute{Provider: "a", Model: "m", Adapter: AdapterOpenAI})
+	r.Register(ModelRoute{Provider: "b", Model: "m", Adapter: AdapterOpenAI})
+	c := NewRouterClient(r)
+	adapterA := &fakeAdapter{name: "a"}
+	adapterB := &fakeAdapter{name: "b"}
+	c.RegisterAdapter("a", AdapterOpenAI, adapterA)
+	c.RegisterAdapter("b", AdapterOpenAI, adapterB)
+	pool := NewKeyPool("key")
+	respA, err := c.Generate(context.Background(), NewSession(SessionConfig{ID: "s-a", Provider: "a", Model: "m"}, pool), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	respB, err := c.Generate(context.Background(), NewSession(SessionConfig{ID: "s-b", Provider: "b", Model: "m"}, pool), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if respA.Provider != "a" || respB.Provider != "b" {
+		t.Fatalf("responses leaked across providers: %+v %+v", respA, respB)
+	}
+}
+
 func TestRouterClientDoesNotRetryProviderError(t *testing.T) {
 	r := NewRouter()
 	r.Register(ModelRoute{Provider: ProviderOpenRouter, Model: "gpt-5", Adapter: AdapterOpenAI})
 	adapter := &retryingAdapter{name: "openai", err: retryStatusError{status: 400}}
 	c := NewRouterClient(r)
-	c.RegisterAdapter(AdapterOpenAI, adapter)
+	c.RegisterAdapter(ProviderOpenRouter, AdapterOpenAI, adapter)
 	session := NewSession(SessionConfig{ID: "no-router-retry", Provider: ProviderOpenRouter, Model: "gpt-5"}, NewKeyPool("key"))
 	_, err := c.Generate(context.Background(), session, Request{})
 	if err == nil {
@@ -130,7 +153,7 @@ func TestGenerateStopsOnDistantRetryAfter(t *testing.T) {
 	r.Register(ModelRoute{Provider: "p", Model: "m", Adapter: AdapterOpenAI})
 	c := NewRouterClient(r)
 	adapter := &abortTestAdapter{}
-	c.RegisterAdapter(AdapterOpenAI, adapter)
+	c.RegisterAdapter("p", AdapterOpenAI, adapter)
 	s := NewSession(SessionConfig{ID: "s", Provider: "p", Model: "m", KeyIndex: 0}, NewKeyPool("k"))
 	done := make(chan error, 1)
 	go func() { _, err := c.Generate(context.Background(), s, Request{}); done <- err }()
@@ -169,7 +192,7 @@ func TestRouterClientStampsSessionID(t *testing.T) {
 	r.Register(ModelRoute{Provider: "p", Model: "m", Adapter: AdapterOpenAI})
 	c := NewRouterClient(r)
 	adapter := &sessionIDCapturingAdapter{}
-	c.RegisterAdapter(AdapterOpenAI, adapter)
+	c.RegisterAdapter("p", AdapterOpenAI, adapter)
 	s := NewSession(SessionConfig{ID: "sess-9", Provider: "p", Model: "m", KeyIndex: 0}, NewKeyPool("k"))
 	if _, err := c.Generate(context.Background(), s, Request{}); err != nil {
 		t.Fatal(err)

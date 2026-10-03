@@ -68,7 +68,7 @@ func newAgentTestSession(p Provider) (*RouterClient, *Session) {
 	r.RegisterProvider(ProviderConfig{ID: "test", BaseURL: "http://test", Keys: NewKeyPool("key"), Adapter: AdapterOpenAI})
 	r.Register(ModelRoute{Provider: "test", Model: "model", Adapter: AdapterOpenAI})
 	c := NewRouterClient(r)
-	c.RegisterAdapter(AdapterOpenAI, p)
+	c.RegisterAdapter("test", AdapterOpenAI, p)
 	s := NewSession(SessionConfig{ID: "s", Provider: "test", Model: "model", KeyIndex: 0}, NewKeyPool("key"))
 	return c, s
 }
