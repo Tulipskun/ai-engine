@@ -894,36 +894,26 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 		return result
 	}
 	switch call.Name {
-	case "delegate_message":
-		id, err := t.runner.Message(ctx, strings.TrimSpace(input.JobID), input.Message)
-		if err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
-		}
-		result.Content = "sub-agent follow-up started: " + id + " - progress and final reports will arrive automatically"
-		return result
-	case "continue_subagent":
-		id, err := t.runner.Continue(ctx, strings.TrimSpace(input.JobID), input.Task)
-		if err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
-		}
-		result.Content = "sub-agent continued in the same worker session: " + id + " - progress and final reports will arrive automatically"
-		return result
-	case "accept_subagent_result":
-		if err := t.runner.Accept(strings.TrimSpace(input.JobID), input.Verification); err != nil {
-			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
-		}
-		result.Content = "Verified result accepted; the next plan step is now ready, if any."
-		return result
-	case "delegate_to_subagent":
+	case "delegate_task":
 		id, err := t.runner.Delegate(ctx, input.Task)
 		if err != nil {
 			result.Content = err.Error()
 			result.IsError = true
 			return result
 		}
-		result.Content = "sub-agent started: " + id + " - scope-check progress reports follow every few worker tool calls; the complete handoff report arrives when the job ends"
+		result.Content = "delegated task started: " + id + " - progress and final reports will arrive automatically"
 		return result
-	case "stop_subagent":
+	case "delegate_message":
+		id, err := t.runner.Message(ctx, strings.TrimSpace(input.JobID), input.Message)
+		if err != nil {
+			return ToolResult{ID: call.ID, Content: err.Error(), IsError: true}
+		}
+		result.Content = "delegated follow-on message started: " + id + " - progress and final reports will arrive automatically"
+		return result
+	case "delegate_status":
+		result.Content = t.runner.Status(strings.TrimSpace(input.JobID))
+		return result
+	case "delegate_stop":
 		report, err := t.runner.Stop(ctx, strings.TrimSpace(input.JobID))
 		if err != nil {
 			result.Content = err.Error()
@@ -932,10 +922,16 @@ func (t *subAgentTool) Execute(ctx context.Context, call ToolCall) ToolResult {
 		}
 		result.Content = report
 		return result
-	default:
-		result.Content = "unknown sub-agent operation"
-		result.IsError = true
+	case "delegate_result":
+		report, err := t.runner.Result(strings.TrimSpace(input.JobID), input.Verification)
+		if err != nil {
+			result.Content = report + "\n" + err.Error()
+			result.IsError = true
+			return result
+		}
+		result.Content = report
 		return result
+
 	}
 }
 
