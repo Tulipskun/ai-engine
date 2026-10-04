@@ -48,9 +48,11 @@ type queryRequest struct {
 	Params []string `json:"params,omitempty"`
 }
 
-type d1QueryResult struct {
-	Success bool        `json:"success"`
-	Errors  []apiError `json:"errors"`
+type queryResult struct {
+	Success bool             `json:"success"`
+	Errors  []apiError       `json:"errors"`
+	Rows    []map[string]any `json:"results"`
+	Meta    map[string]any   `json:"meta"`
 }
 
 func Verify(cfToken string) bool {
@@ -113,15 +115,69 @@ func SaveTunnel(url string) error {
 	if url == "" {
 		return fmt.Errorf("db: tunnel url is empty")
 	}
-	if token == "" || AccountID == "" || DBID == "" {
-		return fmt.Errorf("db: Verify must succeed first")
+
+	if _, err := Query("CREATE TABLE IF NOT EXISTS tunnel (url TEXT NOT NULL)"); err != nil {
+		return err
+	}
+	if _, err := Query("DELETE FROM tunnel"); err != nil {
+		return err
 	}
 
-	return queryBatch([]queryRequest{
-		{SQL: "CREATE TABLE IF NOT EXISTS tunnel (url TEXT NOT NULL)"},
-		{SQL: "DELETE FROM tunnel"},
-		{SQL: "INSERT INTO tunnel (url) VALUES (?)", Params: []string{url}},
-	})
+	_, err := Query("INSERT INTO tunnel (url) VALUES (?)", url)
+	return err
+}
+
+func Query(sql string, params ...string) ([]map[string]any, error) {
+	sql = strings.TrimSpace(sql)
+	if sql == "" {
+		return nil, fmt.Errorf("db: SQL is empty")
+	}
+	if token == "" || AccountID == "" || DBID == "" {
+		return nil, fmt.Errorf("db: Verify must succeed first")
+	}
+
+	body, err := json.Marshal([]queryRequest{{
+		SQL:    sql,
+		Params: params,
+	}})
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := fmt.Sprintf("%s/accounts/%s/d1/database/%s/query", apiBase, AccountID, DBID)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result apiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
+		return nil, apiErrorMessage("D1 query", resp.StatusCode, result.Errors)
+	}
+
+	var results []queryResult
+	if err := json.Unmarshal(result.Result, &results); err != nil {
+		return nil, fmt.Errorf("db: decode D1 query result: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("db: D1 returned no query result")
+	}
+	if !results[0].Success {
+		return nil, apiErrorMessage("D1 query", resp.StatusCode, results[0].Errors)
+	}
+
+	return results[0].Rows, nil
 }
 
 func get(path, cfToken string, out any) error {
@@ -146,46 +202,6 @@ func get(path, cfToken string, out any) error {
 	}
 	if err := json.Unmarshal(result.Result, out); err != nil {
 		return fmt.Errorf("db: decode %s: %w", path, err)
-	}
-	return nil
-}
-
-func queryBatch(queries []queryRequest) error {
-	body, err := json.Marshal(queries)
-	if err != nil {
-		return err
-	}
-
-	endpoint := fmt.Sprintf("%s/accounts/%s/d1/database/%s/query", apiBase, AccountID, DBID)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var result apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
-		return apiErrorMessage("D1 query", resp.StatusCode, result.Errors)
-	}
-
-	var results []d1QueryResult
-	if err := json.Unmarshal(result.Result, &results); err != nil {
-		return fmt.Errorf("db: decode D1 query result: %w", err)
-	}
-	for _, query := range results {
-		if !query.Success {
-			return apiErrorMessage("D1 query", resp.StatusCode, query.Errors)
-		}
 	}
 	return nil
 }
