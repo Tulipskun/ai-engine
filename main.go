@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Tulipskun/ai-engine/io/gateway"
+	"ai-engine/io/gateway"
 )
 
 func main() {
