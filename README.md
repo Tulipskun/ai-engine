@@ -24,7 +24,7 @@ ai-engine
 ## Run
 
 ```bash
-go build -o ai .
+go build -o ai ./main.go
 ./ai
 ```
 
