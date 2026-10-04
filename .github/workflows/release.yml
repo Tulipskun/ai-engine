@@ -1,8 +1,4 @@
-# Builds the daemon binary for Linux arm64 as a CI artifact.
-# There is no release/tag pipeline any more: `ai update` and the
-# install-from-release path were removed with the single-surface daemon
-# (REQ-047, CHANGE-059), so deployments are a normal `go build` + run.
-name: Build daemon
+name: Release
 
 on:
   push:
@@ -10,28 +6,31 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
       - name: Test
         run: go test ./... -timeout 2m
-      - name: Build (linux arm64)
-        env:
-          GOOS: linux
-          GOARCH: arm64
-          CGO_ENABLED: '0'
+      - name: Build
         run: |
+          set -e
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.sha }}" -o dist/ai-engine-linux-arm64 ./cmd/ai-engine
-          sha256sum dist/ai-engine-linux-arm64 | tee dist/checksums.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ai-engine-linux-arm64
-          path: dist/
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$GITHUB_SHA" -o "dist/ai-engine-linux-$arch" .
+          done
+          sha256sum dist/ai-engine-linux-* > dist/checksums.txt
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/ai-engine-linux-amd64 dist/ai-engine-linux-arm64 dist/checksums.txt             --title "ai-engine latest"             --notes "Latest tested build from $GITHUB_SHA."             --latest
