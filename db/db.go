@@ -48,6 +48,9 @@ type queryResponse struct {
 	Errors  []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
+	Result []struct {
+		Results []map[string]any `json:"results"`
+	} `json:"result"`
 }
 
 func VerifyToken(ctx context.Context, token string) (bool, error) {
@@ -55,7 +58,6 @@ func VerifyToken(ctx context.Context, token string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -68,7 +70,6 @@ func VerifyToken(ctx context.Context, token string) (bool, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false, err
 	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false, fmt.Errorf("cloudflare token verification returned HTTP %d", resp.StatusCode)
 	}
@@ -138,7 +139,7 @@ func FindDatabaseID(ctx context.Context, token, accountID, databaseName string) 
 	return "", fmt.Errorf("D1 database %q not found", databaseName)
 }
 
-func Query(ctx context.Context, token, accountID, databaseID, sql string, params ...string) error {
+func query(ctx context.Context, token, accountID, databaseID, sql string, params ...string) (queryResponse, error) {
 	endpoint := fmt.Sprintf(
 		"https://api.cloudflare.com/client/v4/accounts/%s/d1/database/%s/query",
 		accountID, databaseID,
@@ -146,35 +147,60 @@ func Query(ctx context.Context, token, accountID, databaseID, sql string, params
 
 	body, err := json.Marshal(queryRequest{SQL: sql, Params: params})
 	if err != nil {
-		return err
+		return queryResponse{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return queryResponse{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return queryResponse{}, err
 	}
 	defer resp.Body.Close()
 
 	var result queryResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
+		return queryResponse{}, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
 		if len(result.Errors) > 0 {
-			return fmt.Errorf("D1 query failed: %s", result.Errors[0].Message)
+			return queryResponse{}, fmt.Errorf("D1 query failed: %s", result.Errors[0].Message)
 		}
-		return fmt.Errorf("D1 query failed: HTTP %d", resp.StatusCode)
+		return queryResponse{}, fmt.Errorf("D1 query failed: HTTP %d", resp.StatusCode)
 	}
 
-	return nil
+	return result, nil
+}
+
+func Query(ctx context.Context, token, accountID, databaseID, sql string, params ...string) error {
+	_, err := query(ctx, token, accountID, databaseID, sql, params...)
+	return err
+}
+
+func TableExists(ctx context.Context, token, accountID, databaseID, table string) (bool, error) {
+	if !identifierRE.MatchString(table) {
+		return false, fmt.Errorf("invalid table name: %s", table)
+	}
+
+	result, err := query(
+		ctx,
+		token,
+		accountID,
+		databaseID,
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+		table,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return len(result.Result) > 0 && len(result.Result[0].Results) > 0, nil
 }
 
 func CreateTable(ctx context.Context, token, accountID, databaseID, table, columns string) error {
