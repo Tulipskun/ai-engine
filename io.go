@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/io/gateway"
-	"github.com/Tulipskun/ai-engine/io/state"
+	"ai-engine/db"
+	"ai-engine/io"
+	"ai-engine/io/gateway"
 )
 
 // mobileIO is the daemon's input/output boundary for the phone. One direction
@@ -146,7 +146,7 @@ func (b *mobileIO) mirrorOutput(ctx context.Context, output io.Output) {
 
 	// The footer is read off the terminal trace: the model that answered, the
 	// counts it reported (including cached usage) and how long it took (AX-095).
-	var meta state.TurnMeta
+	var meta db.TurnMeta
 	usage := output.Response.Usage
 	if output.Trace != nil {
 		if output.Trace.Response != nil {

@@ -1,21 +1,21 @@
 package main
 
 import (
+	"ai-engine/provider"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/io/gateway"
-	"github.com/Tulipskun/ai-engine/io/state"
-	"github.com/Tulipskun/ai-engine/session"
+	"ai-engine/db"
+	"ai-engine/io/gateway"
+	"ai-engine/session"
 )
 
 // mobileRuntime owns the stateless-mobile wiring for one daemon process
@@ -24,8 +24,8 @@ import (
 // first verified connection arrives, and pushes local state back up (CON-012).
 type mobileRuntime struct {
 	transport  *gateway.Transport
-	client     *state.Client
-	tokens     *state.MemoryToken
+	client     *db.Client
+	tokens     *db.MemoryToken
 	stateRoot  string
 	sessionDir string
 	cfg        runtimeMobileConfig
@@ -81,10 +81,10 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 		// arrives with the phone's handshake. An empty override means the
 		// default API base, not "no D1" — returning (nil, nil) here used to
 		// crash the caller with a nil dereference on secretless boot.
-		api = state.DefaultAPIBase
+		api = db.DefaultAPIBase
 	}
-	tokens := state.NewMemoryToken()
-	client := state.NewClient(api, tokens.Get)
+	tokens := db.NewMemoryToken()
+	client := db.NewClient(api, tokens.Get)
 	client.SetDatabaseName(cfg.d1Database)
 	rt := &mobileRuntime{
 		client:          client,
@@ -146,7 +146,7 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 // and keeps the choice on the chat, so a restart does not lose it.
 type modelStore struct {
 	router   *provider.Router
-	client   *state.Client
+	client   *db.Client
 	sessions *session.SessionManager
 	// workingModel is the admin store's verified model per provider, so the
 	// phone's pickers default to a model that is known to answer.
@@ -500,7 +500,7 @@ func applySessionModel(session *session.Session, providerLocal provider.Provider
 
 // historyStore narrows the D1 client to what the phone's history endpoints
 // need, so the transport never sees the raw state table.
-type historyStore struct{ client *state.Client }
+type historyStore struct{ client *db.Client }
 
 func (h historyStore) ListSessions(ctx context.Context, limit int) ([]gateway.SessionRow, error) {
 	rows, err := h.client.ListSessions(ctx, limit)
@@ -565,14 +565,14 @@ func (h historyStore) Node(ctx context.Context) (gateway.NodeRow, bool, error) {
 // d1storeVerifier adapts the D1 client to the transport's Verifier contract:
 // a wrong credential is ErrTokenRejected (counted), anything else is a
 // transport problem (503, not counted).
-type d1storeVerifier struct{ client *state.Client }
+type d1storeVerifier struct{ client *db.Client }
 
 func (v d1storeVerifier) VerifyToken(ctx context.Context, token string) error {
 	err := v.client.VerifyToken(ctx, token)
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, state.ErrTokenRejected):
+	case errors.Is(err, db.ErrTokenRejected):
 		return gateway.ErrTokenRejected
 	default:
 		return err
@@ -597,7 +597,7 @@ func (m *mobileRuntime) Hydrate(ctx context.Context) error {
 		log.Printf("mobile: prepare sessions for per-session sub-agent settings: %v", err)
 	}
 	if m.cfg.syncConfig {
-		report, err := m.client.HydrateConfig(ctx, state.DefaultConfigFiles(m.stateRoot))
+		report, err := m.client.HydrateConfig(ctx, db.DefaultConfigFiles(m.stateRoot))
 		if err != nil {
 			return err
 		}
@@ -625,14 +625,14 @@ func (m *mobileRuntime) Hydrate(ctx context.Context) error {
 	return nil
 }
 
-// PushState uploads the current config and session state. It is best effort:
+// PushState uploads the current config and session db. It is best effort:
 // a failure here must never interrupt a turn, so the caller only logs it.
 func (m *mobileRuntime) PushState(ctx context.Context) {
 	if m == nil || m.client == nil {
 		return
 	}
 	if m.cfg.syncConfig {
-		report, err := m.client.PushConfig(ctx, state.DefaultConfigFiles(m.stateRoot))
+		report, err := m.client.PushConfig(ctx, db.DefaultConfigFiles(m.stateRoot))
 		if err != nil {
 			log.Printf("mobile: push config to D1: %v", err)
 		} else if len(report.PushedConfig) > 0 {

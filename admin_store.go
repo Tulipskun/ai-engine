@@ -1,12 +1,12 @@
 package main
 
 import (
+	"ai-engine/provider"
+	"ai-engine/provider/registry"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/provider/registry"
 	"log"
 	"path/filepath"
 	"sort"
@@ -14,10 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/agent"
-	"github.com/Tulipskun/ai-engine/io/gateway"
-	"github.com/Tulipskun/ai-engine/io/state"
-	"github.com/Tulipskun/ai-engine/session"
+	"ai-engine/db"
+	"ai-engine/io/gateway"
+	"ai-engine/session"
 )
 
 // adminStore is the phone's write surface for provider configuration and agent
@@ -53,18 +52,18 @@ type adminStore struct {
 	// providerConfig is the daemon's in-memory copy of the provider file, kept
 	// in step with disk and D1 by saveProvidersLocked.
 	providerConfig *registry.ProviderFileConfig
-	client         *state.Client
+	client         *db.Client
 
 	sessions *session.SessionManager
-	agent    *agent.Agent
+	agent    *session.Agent
 
 	// mainRoute is the daemon's boot default, used when the system config leaves
 	// the main provider or model empty.
 	mainRoute provider.SessionConfig
 }
 
-func newAdminStore(stateRoot string, client *state.Client, manager *registry.ProviderManager,
-	providerConfig *registry.ProviderFileConfig, sessions *session.SessionManager, agent *agent.Agent,
+func newAdminStore(stateRoot string, client *db.Client, manager *registry.ProviderManager,
+	providerConfig *registry.ProviderFileConfig, sessions *session.SessionManager, agent *session.Agent,
 	mainRoute provider.SessionConfig) *adminStore {
 	return &adminStore{
 		providerPath:   filepath.Join(stateRoot, "config", "provider.json"),
@@ -502,7 +501,7 @@ func (a *adminStore) probe(ctx context.Context, config provider.ProviderConfig) 
 		ch, err := router.Client.Stream(ctx, session, provider.Request{
 			Model:           model.ID,
 			Stream:          true,
-			SystemPrompt:    "You are a coding agent. Answer briefly.",
+			SystemPrompt:    "You are a coding session. Answer briefly.",
 			Messages:        []provider.Turn{{Role: provider.RoleUser, Content: []provider.ContentPart{{Type: provider.ContentText, Text: "ping"}}}},
 			MaxOutputTokens: 16,
 			// The same tools a real turn carries: a health check that is not
@@ -620,7 +619,7 @@ func systemGenerationToWire(g provider.GenerationSettings) gateway.GenerationSet
 // subGenerationToWire converts the worker agent's stored knobs for the phone.
 // The worker config carries its own temperature, thinking level and output cap,
 // which are the subset of the knob set that applies to a delegated turn.
-func subGenerationToWire(sub agent.SubAgentConfig) gateway.GenerationSettings {
+func subGenerationToWire(sub session.SubAgentConfig) gateway.GenerationSettings {
 	out := gateway.GenerationSettings{
 		ThinkingLevel:   string(sub.ThinkingLevel),
 		Temperature:     sub.Temperature,
@@ -630,7 +629,7 @@ func subGenerationToWire(sub agent.SubAgentConfig) gateway.GenerationSettings {
 }
 
 func (a *adminStore) Settings(context.Context) (gateway.SettingsView, error) {
-	cfg, err := agent.LoadSystemConfig(a.systemPath)
+	cfg, err := session.LoadSystemConfig(a.systemPath)
 	if err != nil {
 		return gateway.SettingsView{}, err
 	}
@@ -667,7 +666,7 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings gateway.Settings
 
 	a.fileMu.Lock()
 	defer a.fileMu.Unlock()
-	cfg, err := agent.LoadSystemConfig(a.systemPath)
+	cfg, err := session.LoadSystemConfig(a.systemPath)
 	if err != nil {
 		return gateway.SettingsView{}, err
 	}
@@ -717,10 +716,10 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings gateway.Settings
 	if err != nil {
 		return gateway.SettingsView{}, err
 	}
-	// One writer for this file: agent.SaveSystemConfig owns the mkdir/chmod/
+	// One writer for this file: session.SaveSystemConfig owns the mkdir/chmod/
 	// write path, so the file cannot drift between the phone's save and the
 	// config loader's idea of its permissions (CHANGE-099).
-	if err := agent.SaveSystemConfig(a.systemPath, cfg); err != nil {
+	if err := session.SaveSystemConfig(a.systemPath, cfg); err != nil {
 		return gateway.SettingsView{}, err
 	}
 	if a.client != nil {
@@ -751,7 +750,7 @@ func (a *adminStore) RefreshRoutesFromDisk() {
 	}
 	a.fileMu.Lock()
 	defer a.fileMu.Unlock()
-	cfg, err := agent.LoadSystemConfig(a.systemPath)
+	cfg, err := session.LoadSystemConfig(a.systemPath)
 	if err != nil {
 		log.Printf("admin: reroute from stored settings: %v", err)
 		return
@@ -763,7 +762,7 @@ func (a *adminStore) RefreshRoutesFromDisk() {
 // applySettings pushes the saved routes into the live runtime: the sub agent
 // takes its provider/model, and the session manager learns the main default for
 // chats that have never picked one.
-func (a *adminStore) applySettings(cfg agent.SystemConfig) {
+func (a *adminStore) applySettings(cfg session.SystemConfig) {
 	if a.agent != nil {
 		if cfg.SubAgent.Provider != "" {
 			a.agent.SubAgentConfig.Provider = cfg.SubAgent.Provider
@@ -792,7 +791,7 @@ func (a *adminStore) applySettings(cfg agent.SystemConfig) {
 
 // mainRouteFrom is the session config a stored system config implies, knobs
 // included, so the boot default and a live reload describe the same thing.
-func mainRouteFrom(cfg agent.SystemConfig) provider.SessionConfig {
+func mainRouteFrom(cfg session.SystemConfig) provider.SessionConfig {
 	g := cfg.Settings()
 	if g.MaxOutputTokens == 0 {
 		g.MaxOutputTokens = cfg.MaxOutputTokensFor()

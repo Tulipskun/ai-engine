@@ -1,9 +1,9 @@
-package agent
+package session
 
 import (
+	"ai-engine/provider"
 	"context"
 	"errors"
-	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 	"testing"
 )

@@ -1,9 +1,9 @@
 package session
 
 import (
+	"ai-engine/provider"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
 	"strings"
 )
 

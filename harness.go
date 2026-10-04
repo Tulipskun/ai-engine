@@ -1,11 +1,11 @@
-package agent
+package main
 
 import (
+	"ai-engine/io"
+	"ai-engine/provider"
+	"ai-engine/session"
 	"context"
 	"errors"
-	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/session"
 	"log"
 	"sync"
 	"time"
@@ -15,7 +15,7 @@ type RequestResolver func(context.Context, io.Input, *session.Session) (provider
 
 type HarnessLoop struct {
 	Client         *provider.RouterClient
-	Agent          *Agent
+	Agent          *session.Agent
 	Source         io.InputSource
 	ResolveSession func(context.Context, io.Input) (*session.Session, error)
 	BuildRequest   RequestResolver
@@ -62,11 +62,11 @@ func (h *HarnessLoop) Run(ctx context.Context) error {
 		return errors.New("sdk: incomplete harness loop configuration")
 	}
 	if h.Agent != nil {
-		h.Agent.SetSubAgentSinks(func(event SubAgentEvent) {
+		h.Agent.SetSubAgentSinks(func(event session.SubAgentEvent) {
 			if event.Parent == nil {
 				return
 			}
-			input := cloneInputRoute(event.Input)
+			input := io.CloneInputRoute(event.Input)
 			if input.SessionID == "" {
 				input.SessionID = event.Parent.ID()
 			}
@@ -80,15 +80,15 @@ func (h *HarnessLoop) Run(ctx context.Context) error {
 					}
 				}
 			}()
-		}, func(event SubAgentEvent) {
+		}, func(event session.SubAgentEvent) {
 			if event.Parent == nil || event.Trace == nil {
 				return
 			}
-			input := cloneInputRoute(event.Input)
+			input := io.CloneInputRoute(event.Input)
 			if input.SessionID == "" {
 				input.SessionID = event.Parent.ID()
 			}
-			metadata := cloneMetadata(input.Metadata)
+			metadata := io.CloneMetadata(input.Metadata)
 			if metadata == nil {
 				metadata = map[string]string{}
 			}
@@ -167,7 +167,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input io.Input) error {
 			responseTraced = true
 		}
 		traceCopy := event
-		metadata := cloneMetadata(input.Metadata)
+		metadata := io.CloneMetadata(input.Metadata)
 		if metadata == nil {
 			metadata = map[string]string{}
 		}
@@ -177,7 +177,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input io.Input) error {
 		}
 	}
 	ctx = session.WithSessionID(ctx, sessionLocal.ID())
-	ctx = context.WithValue(ctx, lifecycleInputKey{}, cloneInputRoute(input))
+	ctx = context.WithValue(ctx, io.LifecycleInputKey{}, io.CloneInputRoute(input))
 	// Per-session agent config (sub-agent pin) takes precedence over the
 	// global defaults for this turn only (ACP session config pattern).
 	if h.ApplySessionConfig != nil {
@@ -200,7 +200,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input io.Input) error {
 	if responseTraced {
 		return nil
 	}
-	output := io.Output{Source: input.Source, SessionID: input.SessionID, Content: append([]provider.ContentPart(nil), resp.Content...), Response: resp, Metadata: cloneMetadata(input.Metadata)}
+	output := io.Output{Source: input.Source, SessionID: input.SessionID, Content: append([]provider.ContentPart(nil), resp.Content...), Response: resp, Metadata: io.CloneMetadata(input.Metadata)}
 	if output.Metadata == nil {
 		output.Metadata = map[string]string{}
 	}
@@ -222,21 +222,4 @@ func (h *HarnessLoop) sessionLock(id string) *sync.Mutex {
 	created := &sync.Mutex{}
 	actual, _ := h.sessionLocks.LoadOrStore(id, created)
 	return actual.(*sync.Mutex)
-}
-
-func cloneMetadata(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-type lifecycleInputKey struct{}
-
-func cloneInputRoute(input io.Input) io.Input {
-	return io.Input{Source: input.Source, SessionID: input.SessionID, Metadata: cloneMetadata(input.Metadata)}
 }

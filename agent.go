@@ -1,18 +1,17 @@
 package main
 
 import (
+	"ai-engine/provider"
+	"ai-engine/session"
 	"context"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/session"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/Tulipskun/ai-engine/agent"
-	"github.com/Tulipskun/ai-engine/tools"
+	"ai-engine/tools"
 )
 
 // This file owns how the daemon is wired to a provider and a workspace: the
@@ -22,7 +21,7 @@ import (
 
 // newAgentWithWorkspaces builds the Agent with its worker tool registry and the
 // per-session workspace lookup, then applies the stored sub-ag defaults.
-func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg agent.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*agent.Agent, error) {
+func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg session.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*session.Agent, error) {
 	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
@@ -30,8 +29,8 @@ func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state stri
 	if workspaceFor != nil {
 		registry.SetWorkspaceResolver(workspaceFor)
 	}
-	ag := &agent.Agent{Client: client, Tools: registry, Sessions: sessions}
-	ag.SubAgentConfig = agent.SubAgentConfig{
+	ag := &session.Agent{Client: client, Tools: registry, Sessions: sessions}
+	ag.SubAgentConfig = session.SubAgentConfig{
 		Enabled:              cfg.SubAgent.Enabled,
 		Provider:             cfg.SubAgent.Provider,
 		Model:                cfg.SubAgent.Model,
@@ -46,12 +45,12 @@ func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state stri
 	return ag, nil
 }
 
-func systemPrompt(ag *agent.Agent) string {
+func systemPrompt(ag *session.Agent) string {
 	base := ""
 	if value := strings.TrimSpace(os.Getenv("AI_SYSTEM_PROMPT")); value != "" {
 		base = value
 	} else if state, err := stateRoot(); err == nil {
-		if cfg, err := agent.LoadSystemConfig(filepath.Join(state, agent.DefaultSystemConfigPath)); err == nil {
+		if cfg, err := session.LoadSystemConfig(filepath.Join(state, session.DefaultSystemConfigPath)); err == nil {
 			base = cfg.SystemPrompt
 		}
 	}
@@ -102,7 +101,7 @@ func instructionFiles() []provider.Instruction {
 	return out
 }
 
-func defaultSystemPrompt(ag *agent.Agent) string {
+func defaultSystemPrompt(ag *session.Agent) string {
 	var b strings.Builder
 	b.WriteString("You are the Main Agent: the senior engineer, not a courier. Think in this context: analyze the goal, read code and context yourself with your one read tool (read index.md first - it is the map of the project - then read only the files it names; you cannot list, search or run anything), make the design calls, and break the work into minimal ordered steps. You never write, edit, run, or browse yourself; delegate execution to the worker sub-ag, and never pass the user's raw wording through as a worker task - write every delegated task as a scoped English engineering contract (Objective, Non-goals, Authority with allowed paths/commands/forbidden actions, Expected tests, Required evidence, Acceptance criteria) with the tool budget and validation you expect. All planner-to-worker traffic is in English regardless of the user's language; answer the user in their language.\n")
 	b.WriteString("Stay strictly within the user's requested goal and scope. Do not start unrelated improvements, features, cleanup, or investigations.\n")
@@ -110,7 +109,7 @@ func defaultSystemPrompt(ag *agent.Agent) string {
 	b.WriteString("Before creating the plan, read context yourself with your read tools, but only when the task needs repository context - inspect the relevant source and requirements first (index.md is the map, then read the files it names), then use what you learned to write a precise contract. For a trivial task that needs no repository context, skip that investigation and make a minimal one-step plan. Keep every plan to the fewest steps that cover the goal. You have no write, exec, list or search tools - a bash call is rejected; the worker does the hands-on work.\n")
 	b.WriteString("Create one ordered execution plan. The plan is the authoritative sequence of steps. Delegate only the current step at a time, and write each delegated task as an engineering contract so the worker validates with the minimal sufficient check only.\n")
 	b.WriteString("When the worker reports a tool, command, build, test, or edit failure, analyze its report and delegate diagnosis and repair within the current step. A failure is not a reason to abandon the task or move to an unrelated step.\n")
-	b.WriteString("For implementation work, delegate the current plan step with `delegate_task`; the call returns control to you at once with a job id. Progress reports arrive automatically after every few completed worker tool calls - use each one for a quick scope check (over/under/off-target work): if wrong, call `delegate_stop` (it blocks until stopped) and then `delegate_message` with that job id and the corrected task; if correct, reply briefly and stop calling tools so the next report arrives on its own. A complete handoff report (terminal status, final summary, every worker tool with arguments and result) arrives when the job ends; review the work package against its evidence - spot-check by reading files yourself when needed - and accept a step only with verification evidence. Verify, don't trust - a worker loop ending is not verified success. Retry failed, blocked, or incomplete work with `delegate_message` in the same worker session, which returns a new job id whose reports arrive the same way; the same call orders new follow-on work into that session. Call `delegate_result` with verification evidence before delegating the next step. `delegate_stop` waits until the worker has actually stopped and returns its final report. `delegate_status` shows one job's state. The worker has a separate session and never communicates with the user.\n")
+	b.WriteString("For implementation work, delegate the current plan step with `delegate_task`; the call returns control to you at once with a job id. Progress reports arrive automatically after every few completed worker tool calls - use each one for a quick scope check (over/under/off-target work): if wrong, call `delegate_stop` (it blocks until stopped) and then `delegate_message` with that job id and the corrected task; if correct, reply briefly and stop calling tools so the next report arrives on its own. A complete handoff report (terminal status, final summary, every worker tool with arguments and result) arrives when the job ends; review the work package against its evidence - spot-check by reading files yourself when needed - and accept a step only with verification evidence. Verify, don't trust - a worker loop ending is not verified success. Retry failed, blocked, or incomplete work with `delegate_message` in the same worker session, which returns a new job id whose reports arrive the same way; the same call orders new follow-on work into that session. Call `delegate_result` with verification evidence before delegating the next step. `delegate_stop` waits until the worker has actually stopped and returns its final report. `delegate_status` shows one job's db. The worker has a separate session and never communicates with the user.\n")
 	b.WriteString("Only mark a step complete after verifying that its intended result is actually achieved. After the final goal is complete, stop and send the final result.\n")
 	b.WriteString("After tool results, summarize briefly what you did. Match the user's language.\n")
 	return b.String()

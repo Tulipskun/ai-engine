@@ -1,11 +1,11 @@
 package openai
 
 import (
+	"ai-engine/provider"
+	"ai-engine/provider/internal"
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/provider/internal"
 	"net/http"
 	"strings"
 	"time"

@@ -1,8 +1,8 @@
 package io
 
 import (
+	"ai-engine/provider"
 	"context"
-	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"time"
 )
@@ -67,4 +67,30 @@ func DispatchDisplay(parent context.Context, display Display, output Output, tim
 		return
 	}
 	go run()
+}
+
+// LifecycleInputKey carries the input that started a turn, so delegation
+// code running inside the turn can recover which session and route it
+// belongs to. The harness writes it, the sub-agent manager reads it, so
+// it lives here where both sides already import.
+type LifecycleInputKey struct{}
+
+// CloneInputRoute copies the routing identity of an input (source,
+// session, metadata) without its turn payload, for continuation turns
+// and worker jobs that need the route but carry their own content.
+func CloneInputRoute(input Input) Input {
+	return Input{Source: input.Source, SessionID: input.SessionID, Metadata: CloneMetadata(input.Metadata)}
+}
+
+// CloneMetadata copies a metadata map so a turn cannot reach back through
+// it into the settings it was built from.
+func CloneMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

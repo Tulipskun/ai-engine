@@ -1,8 +1,8 @@
 package io
 
 import (
+	"ai-engine/provider"
 	"context"
-	"github.com/Tulipskun/ai-engine/provider"
 	"time"
 )
 

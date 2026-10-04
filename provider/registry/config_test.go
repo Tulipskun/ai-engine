@@ -1,7 +1,7 @@
 package registry
 
 import (
-	"github.com/Tulipskun/ai-engine/provider"
+	"ai-engine/provider"
 	"os"
 	"path/filepath"
 	"testing"

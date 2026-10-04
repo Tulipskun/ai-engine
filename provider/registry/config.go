@@ -1,10 +1,10 @@
 package registry
 
 import (
+	"ai-engine/provider"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"strings"

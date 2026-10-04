@@ -1,9 +1,9 @@
-package agent
+package session
 
 import (
+	"ai-engine/provider"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
 )
 
 // Hard loop-control caps (REQ-045). These are system-level fail-fast limits

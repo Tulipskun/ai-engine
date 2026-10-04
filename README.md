@@ -57,7 +57,7 @@ no screen control, no background job manager and no `web_fetch` tool — `bash`
   verified against Cloudflare (`GET /user/tokens/verify`) before the socket is
   upgraded. Missing header → 401; five wrong tokens → 429 and a progressive
   lockout (30 → 60 → 120 → 240 → 300s); Cloudflare unreachable → 503, fail closed.
-- **Stateless** (CON-012): `io/state` pulls `config:*` and
+- **Stateless** (CON-012): `db` pulls `config:*` and
   `sessions/<id>` from D1 into the state root after the first verified
   connection and pushes changes back. Local files stay a cache, so wiping
   `~/.local/share/ai` is recoverable.

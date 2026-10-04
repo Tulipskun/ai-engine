@@ -1,4 +1,4 @@
-package agent
+package session
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Tulipskun/ai-engine/provider"
+	"ai-engine/provider"
 )
 
 // SystemConfig is the boot configuration. The generation knobs are top-level

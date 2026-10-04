@@ -1,15 +1,15 @@
 package tools
 
 import (
+	"ai-engine/provider"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
 	"sort"
 	"strings"
 
-	"github.com/Tulipskun/ai-engine/session"
+	"ai-engine/session"
 )
 
 type handler func(context.Context, json.RawMessage) (string, error)

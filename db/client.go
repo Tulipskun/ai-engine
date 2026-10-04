@@ -1,18 +1,21 @@
-// Package d1store keeps the daemon's runtime state in Cloudflare D1 and serves
-// the phone's history endpoints from it (REQ-046, CON-012).
+// Package db is the daemon's Cloudflare D1 layer: the authoritative copy
+// of runtime state, served through a plain REST client (REQ-046, CON-012).
 //
-// D1 is the authoritative copy; the local files stay exactly what the rest of
-// the runtime already reads and writes (config/*.json and one SQLite file per
-// session under data/sessions/). Hydrate pulls the cloud copy down, Push sends
-// local changes up. A daemon that loses its whole state directory can still
-// come back, as long as one phone connects and hands over a Cloudflare token.
+// D1 holds everything the daemon would lose on a wiped disk: the config
+// files as state rows, one blob per session database, the chat history
+// tables the phone reads, the providers table, the tunnel announcement
+// and the handover record. The local files stay exactly what the rest of
+// the runtime already reads and writes (config/*.json and one SQLite file
+// per session under data/sessions/). Hydrate pulls the cloud copy down,
+// Push sends local changes up.
 //
-// The daemon owns no credential. The token a phone presents in a verified
-// Authorization header is kept in memory by the transport and is empty until
-// the first successful connection (CON-012). That token is an ordinary Cloudflare
-// API token, so the daemon discovers the account and the database from it and
-// talks to D1 through the documented REST API — no Worker, no second secret.
-package state
+// The daemon owns no credential on disk. The Cloudflare API token a phone
+// presents in a verified Authorization header is kept in a MemoryToken and
+// is empty until the first verified connection (CON-012); the bootstrap
+// token from the environment fills it at boot and is replaced on connect.
+// The account and the database are always discovered from the token
+// itself — no ids in any config file.
+package db
 
 import (
 	"bytes"
@@ -31,36 +34,43 @@ import (
 
 // ErrTokenRejected marks a wrong credential, as opposed to a transport or
 // configuration problem. Callers count only the former as failed logins.
-var ErrTokenRejected = errors.New("d1store: token rejected")
+var ErrTokenRejected = errors.New("db: token rejected")
 
-// ErrNoToken means nobody has connected yet: the daemon holds no credential of
-// its own, so D1 is unreachable until a phone presents one.
-var ErrNoToken = errors.New("d1store: no Cloudflare token yet (waiting for a phone)")
+// ErrNoToken means nobody has connected yet: the daemon holds no credential
+// of its own, so D1 is unreachable until a token is adopted.
+var ErrNoToken = errors.New("db: no Cloudflare token yet")
 
 const (
-	// DefaultAPIBase is Cloudflare's REST root; the whole daemon config is one
-	// base URL plus the database name to pick.
+	// DefaultAPIBase is Cloudflare's REST root; the whole daemon config is
+	// one base URL plus the database name to pick.
 	DefaultAPIBase = "https://api.cloudflare.com/client/v4"
 	// DefaultDatabaseName is used when the account holds exactly one D1
 	// database, so a fresh install needs no ids typed by hand.
 	DefaultDatabaseName = "aixodia"
 	defaultTimeout      = 30 * time.Second
-	// D1 refuses a single bound value above 1 MB; stay well under it so a
-	// session blob never gets halfway through and fails the whole batch.
+	// maxValueBytes caps one state value: D1 refuses a single bound value
+	// above 1 MB, so oversized payloads are skipped with a report entry
+	// instead of failing a whole batch halfway through (CON-012).
 	maxValueBytes = 900_000
 	// SessionKeyPrefix is the state-key namespace for session databases.
 	SessionKeyPrefix = "sessions/"
+	// HandoverKey is where a running daemon says it is serving, so a second
+	// daemon can tell that it is the newer one and stand itself down. It is
+	// deliberately not the nodes row: nodes holds the single address the
+	// phone reads, so two daemons writing it would make the address
+	// flicker between them.
+	HandoverKey = "handover/ready"
 )
 
-// Target is the account and database the daemon resolved from a token.
+// Target is the account and database a token resolved to.
 type Target struct {
 	AccountID  string
 	DatabaseID string
 	Name       string
 }
 
-// Client talks to Cloudflare's REST API with the token a phone handed over. It
-// is dependency-free so the runtime keeps its own HTTP conventions.
+// Client talks to Cloudflare's REST API with the adopted token. It is
+// dependency-free so the runtime keeps its own HTTP conventions.
 type Client struct {
 	apiBase  string
 	database string
@@ -73,8 +83,8 @@ type Client struct {
 	resolved bool
 }
 
-// NewClient returns nil when no API base is configured, which is the daemon's
-// way of saying "this deployment does not talk to D1".
+// NewClient returns nil when no API base is configured, which is the
+// daemon's way of saying "this deployment does not talk to D1".
 func NewClient(apiBase string, tokenFn func() string) *Client {
 	apiBase = strings.TrimRight(strings.TrimSpace(apiBase), "/")
 	if apiBase == "" {
@@ -86,8 +96,9 @@ func NewClient(apiBase string, tokenFn func() string) *Client {
 	return &Client{apiBase: apiBase, http: &http.Client{Timeout: defaultTimeout}, tokenFn: tokenFn}
 }
 
-// SetDatabaseName pins which D1 database to use when the account has several.
-// Empty keeps the default: prefer DefaultDatabaseName, else the only database.
+// SetDatabaseName pins which D1 database to use when the account has
+// several. Empty keeps the default: prefer DefaultDatabaseName, else the
+// only database.
 func (c *Client) SetDatabaseName(name string) {
 	if c == nil {
 		return
@@ -100,9 +111,31 @@ func (c *Client) SetDatabaseName(name string) {
 	c.mu.Unlock()
 }
 
+// CurrentToken reports the token currently held ("" = none).
+func (c *Client) CurrentToken() string {
+	if c == nil || c.tokenFn == nil {
+		return ""
+	}
+	return c.tokenFn()
+}
+
+// ResolvedTarget reports the account and database currently in use, for the
+// log line that says which D1 this daemon ended up on.
+func (c *Client) ResolvedTarget() (Target, bool) {
+	if c == nil {
+		return Target{}, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.target, c.resolved
+}
+
+// do sends one authenticated request. A 401/403 is a wrong credential
+// (ErrTokenRejected); any other failure is a transport problem the caller
+// must not count as a wrong guess.
 func (c *Client) do(ctx context.Context, token, method, path string, body []byte, out any) error {
 	if c == nil {
-		return errors.New("d1store: client is not configured")
+		return errors.New("db: client is not configured")
 	}
 	if strings.TrimSpace(token) == "" {
 		return ErrNoToken
@@ -133,7 +166,7 @@ func (c *Client) do(ctx context.Context, token, method, path string, body []byte
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return fmt.Errorf("%w (HTTP %d)", ErrTokenRejected, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return fmt.Errorf("d1store: %s %s -> HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("db: %s %s -> HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	if out == nil {
 		return nil
@@ -141,7 +174,9 @@ func (c *Client) do(ctx context.Context, token, method, path string, body []byte
 	return json.Unmarshal(raw, out)
 }
 
-type cfEnvelope struct {
+// envelope is Cloudflare's wrapper around one query call: per-statement
+// rows plus the shared success flag and error list.
+type envelope struct {
 	Success bool `json:"success"`
 	Result  []struct {
 		Success bool              `json:"success"`
@@ -157,8 +192,9 @@ type cfEnvelope struct {
 	} `json:"errors"`
 }
 
-// queryResult is what one D1 statement returned: rows, rows changed, and the
-// rowid of the last inserted row (the only handle a caller has on a turn's id).
+// queryResult is what one D1 statement returned: rows, rows changed, and
+// the rowid of the last inserted row (the only handle a caller has on a
+// turn's id).
 type queryResult struct {
 	rows      []json.RawMessage
 	changes   int
@@ -179,13 +215,13 @@ func (c *Client) query(ctx context.Context, sql string, params []string) (queryR
 	if err != nil {
 		return queryResult{}, err
 	}
-	var env cfEnvelope
+	var env envelope
 	path := fmt.Sprintf("/accounts/%s/d1/database/%s/query", target.AccountID, target.DatabaseID)
 	if err := c.do(ctx, token, http.MethodPost, path, body, &env); err != nil {
 		return queryResult{}, err
 	}
 	if !env.Success {
-		return queryResult{}, cfFailure(env.Errors)
+		return queryResult{}, cloudFailure(env.Errors)
 	}
 	if len(env.Result) == 0 {
 		return queryResult{}, nil
@@ -197,20 +233,21 @@ func (c *Client) query(ctx context.Context, sql string, params []string) (queryR
 	}, nil
 }
 
-func cfFailure(errs []struct {
+func cloudFailure(errs []struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }) error {
 	if len(errs) == 0 {
-		return errors.New("d1store: cloudflare reported a failure without a message")
+		return errors.New("db: cloudflare reported a failure without a message")
 	}
 	parts := make([]string, 0, len(errs))
 	for _, e := range errs {
 		parts = append(parts, fmt.Sprintf("%d %s", e.Code, e.Message))
 	}
-	return errors.New("d1store: " + strings.Join(parts, "; "))
+	return errors.New("db: " + strings.Join(parts, "; "))
 }
 
+// queryInto decodes every row into T.
 func queryInto[T any](rows []json.RawMessage) ([]T, error) {
 	out := make([]T, 0, len(rows))
 	for _, row := range rows {
@@ -223,13 +260,13 @@ func queryInto[T any](rows []json.RawMessage) ([]T, error) {
 	return out, nil
 }
 
-// VerifyToken checks a candidate Cloudflare API token a phone presented and
-// resolves the account and database it can reach. Only a bad credential returns
-// ErrTokenRejected; a valid token that cannot see a database is reported as a
-// plain error, so the gate treats it as "cannot check" instead of a wrong guess.
+// VerifyToken checks a candidate Cloudflare API token and resolves the
+// account and database it can reach. Only a bad credential returns
+// ErrTokenRejected; a valid token that cannot see a database is a plain
+// error, so the gate treats it as "cannot check" instead of a wrong guess.
 func (c *Client) VerifyToken(ctx context.Context, token string) error {
 	if c == nil {
-		return errors.New("d1store: client is not configured")
+		return errors.New("db: client is not configured")
 	}
 	if strings.TrimSpace(token) == "" {
 		return ErrTokenRejected
@@ -250,14 +287,6 @@ func (c *Client) VerifyToken(ctx context.Context, token string) error {
 	return err
 }
 
-// CurrentToken reports the token the transport currently holds ("" = none).
-func (c *Client) CurrentToken() string {
-	if c == nil || c.tokenFn == nil {
-		return ""
-	}
-	return c.tokenFn()
-}
-
 type accountRow struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -268,8 +297,8 @@ type databaseRow struct {
 	Name string `json:"name"`
 }
 
-// resolve turns a token into the account and database to use, and caches the
-// answer per token: a rotated token must be resolved again.
+// resolve turns a token into the account and database to use, and caches
+// the answer per token: a rotated token must be resolved again.
 func (c *Client) resolve(ctx context.Context, token string) (Target, error) {
 	if strings.TrimSpace(token) == "" {
 		return Target{}, ErrNoToken
@@ -289,7 +318,7 @@ func (c *Client) resolve(ctx context.Context, token string) (Target, error) {
 		return Target{}, err
 	}
 	if !accounts.Success || len(accounts.Result) == 0 {
-		return Target{}, errors.New("d1store: the token cannot see any Cloudflare account")
+		return Target{}, errors.New("db: the token cannot see any Cloudflare account")
 	}
 	account := accounts.Result[0].ID
 	if len(accounts.Result) > 1 {
@@ -311,7 +340,7 @@ func (c *Client) resolve(ctx context.Context, token string) (Target, error) {
 		return Target{}, err
 	}
 	if !databases.Success || len(databases.Result) == 0 {
-		return Target{}, fmt.Errorf("d1store: account %s has no D1 database the token can see", account)
+		return Target{}, fmt.Errorf("db: account %s has no D1 database the token can see", account)
 	}
 	c.mu.RLock()
 	wanted := c.database
@@ -332,7 +361,7 @@ func (c *Client) resolve(ctx context.Context, token string) (Target, error) {
 			for _, db := range databases.Result {
 				names = append(names, db.Name)
 			}
-			return Target{}, fmt.Errorf("d1store: set d1_database in entry.json; this account has %s", strings.Join(names, ", "))
+			return Target{}, fmt.Errorf("db: set d1_database in entry.json; this account has %s", strings.Join(names, ", "))
 		}
 	}
 	target := Target{AccountID: account, DatabaseID: chosen.UUID, Name: chosen.Name}
@@ -344,20 +373,9 @@ func (c *Client) resolve(ctx context.Context, token string) (Target, error) {
 
 func (c *Client) ensureTarget(ctx context.Context, token string) (Target, error) {
 	if c == nil {
-		return Target{}, errors.New("d1store: client is not configured")
+		return Target{}, errors.New("db: client is not configured")
 	}
 	return c.resolve(ctx, token)
-}
-
-// ResolvedTarget reports the account and database currently in use, for the log
-// line that says which D1 this daemon ended up on.
-func (c *Client) ResolvedTarget() (Target, bool) {
-	if c == nil {
-		return Target{}, false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.target, c.resolved
 }
 
 // Get returns one state value. found=false means the key does not exist.
@@ -378,11 +396,11 @@ func (c *Client) Get(ctx context.Context, key string) (value string, found bool,
 	return out.Value, true, nil
 }
 
-// Put stores a state value, refusing oversized payloads instead of letting D1
-// reject them mid-turn (CON-012).
+// Put stores a state value, refusing oversized payloads instead of letting
+// D1 reject them mid-turn (CON-012).
 func (c *Client) Put(ctx context.Context, key, value string) error {
 	if len(value) > maxValueBytes {
-		return fmt.Errorf("d1store: %q is %d bytes, over the %d byte limit", key, len(value), maxValueBytes)
+		return fmt.Errorf("db: %q is %d bytes, over the %d byte limit", key, len(value), maxValueBytes)
 	}
 	_, err := c.query(ctx,
 		`INSERT INTO state(key, value, updated_at) VALUES(?, ?, unixepoch())
@@ -445,8 +463,8 @@ type Turn struct {
 	Text      string `json:"text"`
 	CreatedAt int64  `json:"created_at"`
 	// Footer of a model turn: which model answered, what it cost and how long
-	// it took, so the phone can draw it under that message and keep it after a
-	// restart (AX-095).
+	// it took, so the phone can draw it under that message and keep it after
+	// a restart (AX-095).
 	Model           string `json:"model"`
 	InputTokens     int    `json:"input_tokens"`
 	OutputTokens    int    `json:"output_tokens"`
@@ -454,10 +472,10 @@ type Turn struct {
 	CacheWrite      int    `json:"cache_write_tokens"`
 	ReasoningTokens int    `json:"reasoning_tokens"`
 	DurationMs      int64  `json:"duration_ms"`
-	// Whether the provider's input count already contains the cache parts, so
-	// the phone can label the two numbers instead of printing them as rivals.
-	// D1 stores this as an INTEGER column, so it arrives as 0/1 rather than a
-	// JSON boolean, and unmarshalling a number into a bool is an error.
+	// InputIncludesCache says whether the provider's input count already
+	// contains the cache parts. D1 stores it as INTEGER, so it arrives as
+	// 0/1 rather than a JSON boolean, and unmarshalling a number into a
+	// bool is an error.
 	InputIncludesCache int `json:"input_includes_cache"`
 }
 
@@ -468,8 +486,46 @@ type Node struct {
 	Heartbeat int64  `json:"heartbeat"`
 }
 
-// truncateRunes cuts a title on a character boundary: slicing bytes would leave
-// a half-written rune in the chat title, which every client renders as ���.
+// ProviderRow is one provider in the D1 providers table. keys travels as
+// a JSON array because D1 has no array type; free is 0/1 for the same
+// reason. Index is the running number (0, 1, 2, ...) the daemon assigns
+// in provider order.
+type ProviderRow struct {
+	Index    int
+	Name     string
+	Adapter  string
+	Endpoint string
+	APIKeys  []string
+	Free     bool
+}
+
+// TurnMeta is the part of a turn the phone shows in the message footer.
+type TurnMeta struct {
+	Model        string
+	InputTokens  int
+	OutputTokens int
+	CacheRead    int
+	CacheWrite   int
+	// ReasoningTokens counts the output a model spent thinking, and
+	// InputIncludesCache records whether InputTokens already contains the
+	// cache parts, so the phone can label the two instead of printing them
+	// as rivals.
+	ReasoningTokens    int
+	InputIncludesCache bool
+	DurationMs         int64
+}
+
+// Handover is one daemon's claim to be the one currently serving.
+type Handover struct {
+	Instance string `json:"instance"`
+	Tunnel   string `json:"tunnel"`
+	Version  string `json:"version,omitempty"`
+	At       int64  `json:"at"`
+}
+
+// truncateRunes cuts a title on a character boundary: slicing bytes would
+// leave a half-written rune in the chat title, which every client renders
+// as replacement characters.
 func truncateRunes(text string, limit int) string {
 	count := 0
 	for i := range text {
@@ -479,6 +535,14 @@ func truncateRunes(text string, limit int) string {
 		count++
 	}
 	return text
+}
+
+// boolInt renders a flag for the SQL driver, which has no boolean.
+func boolInt(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 const sessionColumns = "id, title, provider, model, sub_provider, sub_model, sub_enabled, created_at, updated_at"
@@ -511,7 +575,7 @@ func (c *Client) GetSession(ctx context.Context, id string) (Session, bool, erro
 // CreateSession inserts a chat if it is new and returns the stored row.
 func (c *Client) CreateSession(ctx context.Context, id, title, model string) (Session, error) {
 	if strings.TrimSpace(id) == "" {
-		return Session{}, errors.New("d1store: session id is required")
+		return Session{}, errors.New("db: session id is required")
 	}
 	if title == "" {
 		title = id
@@ -549,14 +613,12 @@ func (c *Client) RenameSession(ctx context.Context, id, title string) (Session, 
 
 // SetSessionSubAgent stores the per-session sub-agent override. Empty fields
 // clear the pin so the session follows the global agent defaults again.
-// subEnabled == nil leaves the stored flag untouched.
-// SetSessionSubAgent stores the per-session sub-agent override. writeRoute is
-// false for a request that only flips subEnabled: the route columns then keep
-// whatever the session already had (an empty route means "use the agent's
-// global sub-agent"), so enabling the sub-agent does not erase a stored route.
+// subEnabled == nil leaves the stored flag untouched, and writeRoute false
+// leaves the route columns alone, so flipping only the flag cannot erase a
+// stored route.
 func (c *Client) SetSessionSubAgent(ctx context.Context, sessionID, subProvider, subModel string, subEnabled *bool, writeRoute bool) error {
 	if strings.TrimSpace(sessionID) == "" {
-		return errors.New("d1store: session id is required")
+		return errors.New("db: session id is required")
 	}
 	if _, err := c.query(ctx,
 		"INSERT OR IGNORE INTO sessions(id, title, sub_enabled, created_at, updated_at) VALUES(?, ?, -1, unixepoch(), unixepoch())",
@@ -587,11 +649,11 @@ func (c *Client) SetSessionSubAgent(ctx context.Context, sessionID, subProvider,
 }
 
 // SetSessionRoute remembers which provider and model a chat runs on, so the
-// phone's choice survives a restart and a second device. The chat is created if
-// the daemon sees it before the phone does.
+// phone's choice survives a restart and a second device. The chat is created
+// if the daemon sees it before the phone does.
 func (c *Client) SetSessionRoute(ctx context.Context, sessionID, provider, model string) error {
 	if strings.TrimSpace(sessionID) == "" {
-		return errors.New("d1store: session id is required")
+		return errors.New("db: session id is required")
 	}
 	if _, err := c.query(ctx,
 		"INSERT OR IGNORE INTO sessions(id, title, sub_enabled, created_at, updated_at) VALUES(?, ?, -1, unixepoch(), unixepoch())",
@@ -619,8 +681,8 @@ func (c *Client) DeleteSession(ctx context.Context, id string) (bool, error) {
 	return res.changes > 0, nil
 }
 
-// Turns returns history rows in ascending seq order; beforeSeq == 0 means "from
-// the newest backwards", which is what the phone's paged list asks for.
+// Turns returns history rows in ascending seq order; beforeSeq == 0 means
+// "from the newest backwards", which is what the phone's paged list asks for.
 func (c *Client) Turns(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]Turn, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
@@ -645,52 +707,21 @@ func (c *Client) Turns(ctx context.Context, sessionID string, beforeSeq int64, l
 	return turns, nil
 }
 
-// AppendTurn mirrors one finished turn into the history table the phone reads.
-// order=0 means "append at the end"; positive values keep FIFO ingestion when
-// several turns are flushed together.
-func (c *Client) AppendTurn(ctx context.Context, sessionID, role, agent, jobID, text string) error {
-	_, err := c.AppendTurnAt(ctx, sessionID, role, agent, jobID, text)
-	return err
-}
-
-// TurnMeta is the part of a turn the phone shows in the message footer.
-type TurnMeta struct {
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	CacheRead    int
-	CacheWrite   int
-	// ReasoningTokens counts the output a model spent thinking, and
-	// InputIncludesCache records whether InputTokens already contains the cache
-	// parts, so the phone can label the two instead of printing them as rivals.
-	ReasoningTokens    int
-	InputIncludesCache bool
-	DurationMs         int64
-}
-
-// boolInt renders a flag for the SQL driver, which has no boolean.
-func boolInt(v bool) string {
-	if v {
-		return "1"
-	}
-	return "0"
-}
-
-// AppendModelTurn mirrors one answered turn together with the footer data, and
-// returns its seq. A user turn carries none of it.
-func (c *Client) AppendModelTurn(ctx context.Context, sessionID, agent, jobID, text string, meta TurnMeta) (int64, error) {
-	return c.appendTurn(ctx, sessionID, "model", agent, jobID, text, meta)
-}
-
 // AppendTurnAt appends one turn and returns its seq. A user turn that is the
 // first message names the session, the way every messenger does.
 func (c *Client) AppendTurnAt(ctx context.Context, sessionID, role, agent, jobID, text string) (int64, error) {
 	return c.appendTurn(ctx, sessionID, role, agent, jobID, text, TurnMeta{})
 }
 
+// AppendModelTurn mirrors one answered turn together with the footer data,
+// and returns its seq. A user turn carries none of it.
+func (c *Client) AppendModelTurn(ctx context.Context, sessionID, agent, jobID, text string, meta TurnMeta) (int64, error) {
+	return c.appendTurn(ctx, sessionID, "model", agent, jobID, text, meta)
+}
+
 func (c *Client) appendTurn(ctx context.Context, sessionID, role, agent, jobID, text string, meta TurnMeta) (int64, error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return 0, errors.New("d1store: session id is required")
+		return 0, errors.New("db: session id is required")
 	}
 	if _, err := c.query(ctx,
 		"INSERT OR IGNORE INTO sessions(id, title, sub_enabled, created_at, updated_at) VALUES(?, ?, -1, unixepoch(), unixepoch())",
@@ -718,8 +749,9 @@ func (c *Client) appendTurn(ctx context.Context, sessionID, role, agent, jobID, 
 			}
 		}
 	}
-	// The next seq is read inside the same statement so a turn can never land on
-	// a duplicate (session_id, seq) when two phones finish at the same moment.
+	// The next seq is read inside the same statement so a turn can never land
+	// on a duplicate (session_id, seq) when two phones finish at the same
+	// moment.
 	inserted, err := c.query(ctx,
 		`INSERT INTO turns(session_id, seq, role, agent, job_id, text, created_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, input_includes_cache, duration_ms)
 		 SELECT ?, COALESCE((SELECT MAX(seq) + 1 FROM turns WHERE session_id = ?), 1), ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?`,
@@ -752,11 +784,10 @@ func (c *Client) appendTurn(ctx context.Context, sessionID, role, agent, jobID, 
 
 // AnnounceTunnelURL records the daemon's public quick-tunnel URL in the
 // tunnel table, replacing the previous row. The phone reads this table
-// directly to find the daemon (CHANGE-106); the nodes row is no longer
-// written by the daemon.
+// directly to find the daemon.
 func (c *Client) AnnounceTunnelURL(ctx context.Context, tunnelURL string) error {
 	if strings.TrimSpace(tunnelURL) == "" {
-		return errors.New("d1store: tunnel URL is required")
+		return errors.New("db: tunnel URL is required")
 	}
 	if _, err := c.query(ctx, "DELETE FROM tunnel", nil); err != nil {
 		return err
@@ -765,19 +796,8 @@ func (c *Client) AnnounceTunnelURL(ctx context.Context, tunnelURL string) error 
 	return err
 }
 
-// Heartbeat announces the public quick-tunnel URL so the phone can discover
-// this daemon through the same D1 it already has a token for.
-func (c *Client) Heartbeat(ctx context.Context, tunnelURL, version string) error {
-	_, err := c.query(ctx,
-		`INSERT INTO nodes(id, tunnel_url, version, heartbeat) VALUES('ai', ?, ?, unixepoch())
-		 ON CONFLICT(id) DO UPDATE SET tunnel_url = excluded.tunnel_url,
-		   version = excluded.version, heartbeat = unixepoch()`,
-		[]string{tunnelURL, version})
-	return err
-}
-
-// Node returns the current announcement, or found=false when the daemon has
-// never reported in.
+// Node returns the current announcement, or found=false when the daemon
+// has never reported in.
 func (c *Client) Node(ctx context.Context) (Node, bool, error) {
 	res, err := c.query(ctx, "SELECT tunnel_url, version, heartbeat FROM nodes WHERE id = 'ai'", nil)
 	if err != nil {
@@ -790,109 +810,47 @@ func (c *Client) Node(ctx context.Context) (Node, bool, error) {
 	return list[0], true, nil
 }
 
-// ProviderRow is one provider in the D1 providers table. keys travels as
-// a JSON array and headers as a JSON object because D1 has no array
-// type; free_only is 0/1 for the same reason. index is the running
-// number (0, 1, 2, ...) the daemon assigns in provider order.
-type ProviderRow struct {
-	Index    int
-	Name     string
-	Adapter  string
-	Endpoint string
-	APIKeys  []string
-	Free     bool
-}
-
-// EnsureProvidersTable creates the providers table when it is missing.
-// "index" is quoted: it is a reserved word in SQLite.
-func (c *Client) EnsureProvidersTable(ctx context.Context) error {
-	if c == nil {
-		return errors.New("d1store: client is not configured")
+// ClaimHandover records that this daemon is up and where it is reachable.
+// It is written by the daemon rather than by the thing hosting it, because
+// the daemon is what holds the Cloudflare token — the host has none, and
+// CON-012 says the system must not grow a second credential for this.
+func (c *Client) ClaimHandover(ctx context.Context, instance, tunnel, version string, at int64) error {
+	raw, err := json.Marshal(Handover{Instance: instance, Tunnel: tunnel, Version: version, At: at})
+	if err != nil {
+		return err
 	}
-	_, err := c.query(ctx, `CREATE TABLE IF NOT EXISTS providers(
-		"index" INTEGER PRIMARY KEY,
-		provider TEXT NOT NULL DEFAULT '',
-		adapter TEXT NOT NULL DEFAULT '',
-		endpoint TEXT NOT NULL DEFAULT '',
-		keys TEXT NOT NULL DEFAULT '[]',
-		free INTEGER NOT NULL DEFAULT 0
-	)`, nil)
+	_, err = c.query(ctx,
+		`INSERT INTO state(key, value, updated_at) VALUES(?, ?, unixepoch())
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
+		[]string{HandoverKey, string(raw)})
 	return err
 }
 
-// providerRowRaw is the wire shape of one providers row: the JSON columns
-// arrive as text and are parsed into ProviderRow by ListProviders.
-type providerRowRaw struct {
-	Index    int    `json:"index"`
-	Name     string `json:"provider"`
-	Adapter  string `json:"adapter"`
-	Endpoint string `json:"endpoint"`
-	Keys     string `json:"keys"`
-	Free     int    `json:"free"`
-}
-
-// ListProviders returns every provider in index order. A row whose JSON
-// does not parse fails the whole call: a half-read provider set would
-// route turns to the wrong keys.
-func (c *Client) ListProviders(ctx context.Context) ([]ProviderRow, error) {
-	res, err := c.query(ctx,
-		`SELECT "index", provider, adapter, endpoint, keys, free FROM providers ORDER BY "index"`,
-		nil)
+// Successor returns the daemon that took over, if it started after us.
+// Comparing the start time is what keeps a fresh instance from reading the
+// record of the one it replaced and standing itself down on the spot.
+func (c *Client) Successor(ctx context.Context, startedAt int64) (Handover, bool, error) {
+	res, err := c.query(ctx, "SELECT value FROM state WHERE key = ? LIMIT 1", []string{HandoverKey})
 	if err != nil {
-		return nil, err
+		return Handover{}, false, err
 	}
-	raws, err := queryInto[providerRowRaw](res.rows)
-	if err != nil {
-		return nil, err
+	list, err := queryInto[struct{ Value string }](res.rows)
+	if err != nil || len(list) == 0 || list[0].Value == "" {
+		return Handover{}, false, err
 	}
-	out := make([]ProviderRow, 0, len(raws))
-	for _, raw := range raws {
-		var keys []string
-		if strings.TrimSpace(raw.Keys) != "" {
-			if err := json.Unmarshal([]byte(raw.Keys), &keys); err != nil {
-				return nil, fmt.Errorf("d1store: provider %q keys: %w", raw.Name, err)
-			}
-		}
-		out = append(out, ProviderRow{
-			Index: raw.Index, Name: raw.Name, Adapter: raw.Adapter,
-			Endpoint: raw.Endpoint, APIKeys: keys,
-			Free: raw.Free != 0,
-		})
+	var claim Handover
+	if err := json.Unmarshal([]byte(list[0].Value), &claim); err != nil {
+		return Handover{}, false, nil
 	}
-	return out, nil
-}
-
-// PutProviders replaces the whole providers table with rows, numbered
-// 0, 1, 2, ... in the given order. The table is tiny (a handful of
-// rows), so a full replace keeps the daemon from ever disagreeing with
-// D1 about a provider the phone just deleted.
-func (c *Client) PutProviders(ctx context.Context, rows []ProviderRow) error {
-	if _, err := c.query(ctx, "DELETE FROM providers", nil); err != nil {
-		return err
+	if claim.At <= startedAt {
+		return Handover{}, false, nil
 	}
-	for i, row := range rows {
-		keys, err := json.Marshal(row.APIKeys)
-		if err != nil {
-			return fmt.Errorf("d1store: provider %q keys: %w", row.Name, err)
-		}
-		free := "0"
-		if row.Free {
-			free = "1"
-		}
-		_, err = c.query(ctx,
-			`INSERT INTO providers("index", provider, adapter, endpoint, keys, free)
-			 VALUES(?, ?, ?, ?, ?, ?)`,
-			[]string{strconv.Itoa(i), row.Name, row.Adapter, row.Endpoint, string(keys), free})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return claim, true, nil
 }
 
 // MemoryToken stores the Cloudflare token in RAM. It is the daemon's only
-// credential and it is intentionally volatile: a restart requires a phone to
-// hand it over again (REQ-046(3), CON-012).
+// credential and it is intentionally volatile: a restart requires a phone
+// to hand it over again (REQ-046(3), CON-012).
 type MemoryToken struct{ value atomic.Value }
 
 func NewMemoryToken() *MemoryToken {
@@ -923,8 +881,8 @@ func (m *MemoryToken) Clear() {
 	}
 }
 
-// turnFooterColumns are the columns an answered turn needs for the footer the
-// phone draws under that message (AX-095).
+// turnFooterColumns are the columns an answered turn needs for the footer
+// the phone draws under that message (AX-095).
 var turnFooterColumns = []struct{ name, ddl string }{
 	{"model", "ALTER TABLE turns ADD COLUMN model TEXT NOT NULL DEFAULT ''"},
 	{"input_tokens", "ALTER TABLE turns ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"},
@@ -937,81 +895,21 @@ var turnFooterColumns = []struct{ name, ddl string }{
 }
 
 // subAgentColumns are the per-session sub-agent columns (CHANGE-085). The
-// default is -1, "not set", so a row that predates them, or a fresh one, falls
-// back to the agent's global sub-agent instead of reading as disabled.
+// default is -1, "not set", so a row that predates them, or a fresh one,
+// falls back to the agent's global sub-agent instead of reading as disabled.
 var subAgentColumns = []struct{ name, ddl string }{
 	{"sub_provider", "ALTER TABLE sessions ADD COLUMN sub_provider TEXT NOT NULL DEFAULT ''"},
 	{"sub_model", "ALTER TABLE sessions ADD COLUMN sub_model TEXT NOT NULL DEFAULT ''"},
 	{"sub_enabled", "ALTER TABLE sessions ADD COLUMN sub_enabled INTEGER NOT NULL DEFAULT -1"},
 }
 
-// EnsureSubAgentColumns adds the per-session sub-agent columns when they are
-// missing, and repairs a column an earlier manual migration created with a
-// default that reads as "off": sub_enabled is a three-state value, so an empty
-// text default would fail the int scan. It runs once, next to
-// EnsureTurnFooter, after the token that reaches the database is verified.
-func (c *Client) EnsureSubAgentColumns(ctx context.Context) error {
-	if c == nil {
-		return errors.New("d1store: client is not configured")
-	}
-	have := map[string]string{}
-	res, err := c.query(ctx, "PRAGMA table_info(sessions)", nil)
-	if err != nil {
-		return err
-	}
-	rows, err := queryInto[struct {
-		Name         string `json:"name"`
-		DefaultValue string `json:"dflt_value"`
-	}](res.rows)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		have[row.Name] = row.DefaultValue
-	}
-	for _, column := range subAgentColumns {
-		if _, ok := have[column.name]; !ok {
-			if _, err := c.query(ctx, column.ddl, nil); err != nil {
-				return fmt.Errorf("d1store: add sessions.%s: %w", column.name, err)
-			}
-			continue
-		}
-		// Present but with a default that cannot be read as the three-state
-		// value: normalise the stored rows and rebuild the column default.
-		if column.name == "sub_enabled" && !isNumericSQLDefault(have[column.name]) {
-			if _, err := c.query(ctx, "UPDATE sessions SET sub_enabled = -1 WHERE sub_enabled IS NULL OR CAST(sub_enabled AS TEXT) = ''", nil); err != nil {
-				return fmt.Errorf("d1store: normalise sessions.sub_enabled: %w", err)
-			}
-			if _, err := c.query(ctx, "UPDATE sessions SET sub_enabled = -1 WHERE sub_enabled > 1 OR sub_enabled < -1", nil); err != nil {
-				return fmt.Errorf("d1store: clamp sessions.sub_enabled: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
-// isNumericSQLDefault reports whether a D1 dflt_value literal is an integer, so
-// a column default of -1/0/1 is left alone and anything else is repaired.
-func isNumericSQLDefault(value string) bool {
-	value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "'"))
-	if value == "" {
-		return false
-	}
-	if _, err := strconv.Atoi(value); err != nil {
-		return false
-	}
-	return true
-}
-
 // EnsureTurnFooter adds the footer columns when they are missing. The daemon
-// writes them on every answer, so a database created before AX-095 would fail
-// every insert until it is brought up to date; the phone's Worker schema lists
-// the same columns for a fresh database, and worker/migrations/0002_turn_footer.sql
-// is the same change written for wrangler. It runs once, after the token that
-// reaches the database has been verified.
+// writes them on every answer, so a database created before AX-095 would
+// fail every insert until it is brought up to date. It runs once, after the
+// token that reaches the database is verified.
 func (c *Client) EnsureTurnFooter(ctx context.Context) error {
 	if c == nil {
-		return errors.New("d1store: client is not configured")
+		return errors.New("db: client is not configured")
 	}
 	res, err := c.query(ctx, "PRAGMA table_info(turns)", nil)
 	if err != nil {
@@ -1032,61 +930,155 @@ func (c *Client) EnsureTurnFooter(ctx context.Context) error {
 			continue
 		}
 		if _, err := c.query(ctx, column.ddl, nil); err != nil {
-			return fmt.Errorf("d1store: add turns.%s: %w", column.name, err)
+			return fmt.Errorf("db: add turns.%s: %w", column.name, err)
 		}
 	}
 	return nil
 }
 
-// HandoverKey is where a running daemon says it is serving, so a second daemon
-// can tell that it is the newer one and stand itself down. It is deliberately
-// not the nodes row: nodes holds the single address the phone reads, so two
-// daemons writing it would make the address flicker between them.
-const HandoverKey = "handover/ready"
-
-// Handover is one daemon's claim to be the one currently serving.
-type Handover struct {
-	Instance string `json:"instance"`
-	Tunnel   string `json:"tunnel"`
-	Version  string `json:"version,omitempty"`
-	At       int64  `json:"at"`
-}
-
-// ClaimHandover records that this daemon is up and where it is reachable. It is
-// written by the daemon rather than by the thing hosting it, because the daemon
-// is what holds the Cloudflare token — the host has none, and CON-012 says the
-// system must not grow a second credential for this.
-func (c *Client) ClaimHandover(ctx context.Context, instance, tunnel, version string, at int64) error {
-	raw, err := json.Marshal(Handover{Instance: instance, Tunnel: tunnel, Version: version, At: at})
+// EnsureSubAgentColumns adds the per-session sub-agent columns when they are
+// missing, and repairs a column an earlier manual migration created with a
+// default that reads as "off": sub_enabled is a three-state value, so an
+// empty text default would fail the int scan. It runs once, next to
+// EnsureTurnFooter, after the token that reaches the database is verified.
+func (c *Client) EnsureSubAgentColumns(ctx context.Context) error {
+	if c == nil {
+		return errors.New("db: client is not configured")
+	}
+	have := map[string]string{}
+	res, err := c.query(ctx, "PRAGMA table_info(sessions)", nil)
 	if err != nil {
 		return err
 	}
-	_, err = c.query(ctx,
-		`INSERT INTO state(key, value, updated_at) VALUES(?, ?, unixepoch())
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
-		[]string{HandoverKey, string(raw)})
+	rows, err := queryInto[struct {
+		Name         string `json:"name"`
+		DefaultValue string `json:"dflt_value"`
+	}](res.rows)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		have[row.Name] = row.DefaultValue
+	}
+	for _, column := range subAgentColumns {
+		if _, ok := have[column.name]; !ok {
+			if _, err := c.query(ctx, column.ddl, nil); err != nil {
+				return fmt.Errorf("db: add sessions.%s: %w", column.name, err)
+			}
+			continue
+		}
+		// Present but with a default that cannot be read as the three-state
+		// value: normalise the stored rows and clamp the out-of-range ones.
+		if column.name == "sub_enabled" && !isNumericSQLDefault(have[column.name]) {
+			if _, err := c.query(ctx, "UPDATE sessions SET sub_enabled = -1 WHERE sub_enabled IS NULL OR CAST(sub_enabled AS TEXT) = ''", nil); err != nil {
+				return fmt.Errorf("db: normalise sessions.sub_enabled: %w", err)
+			}
+			if _, err := c.query(ctx, "UPDATE sessions SET sub_enabled = -1 WHERE sub_enabled > 1 OR sub_enabled < -1", nil); err != nil {
+				return fmt.Errorf("db: clamp sessions.sub_enabled: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// isNumericSQLDefault reports whether a D1 dflt_value literal is an integer,
+// so a column default of -1/0/1 is left alone and anything else is repaired.
+func isNumericSQLDefault(value string) bool {
+	value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "'"))
+	if value == "" {
+		return false
+	}
+	if _, err := strconv.Atoi(value); err != nil {
+		return false
+	}
+	return true
+}
+
+// EnsureProvidersTable creates the providers table when it is missing, so
+// a database created before the table existed still works. "index" is
+// quoted: it is a reserved word in SQLite. It runs once at boot, after the
+// bootstrap token is verified.
+func (c *Client) EnsureProvidersTable(ctx context.Context) error {
+	if c == nil {
+		return errors.New("db: client is not configured")
+	}
+	_, err := c.query(ctx, `CREATE TABLE IF NOT EXISTS providers(
+		"index" INTEGER PRIMARY KEY,
+		provider TEXT NOT NULL DEFAULT '',
+		adapter TEXT NOT NULL DEFAULT '',
+		endpoint TEXT NOT NULL DEFAULT '',
+		keys TEXT NOT NULL DEFAULT '[]',
+		free INTEGER NOT NULL DEFAULT 0
+	)`, nil)
 	return err
 }
 
-// Successor returns the daemon that took over, if it started after us. Comparing
-// the start time is what keeps a fresh instance from reading the record of the one
-// it replaced and standing itself down on the spot; without it two daemons would
-// each wait for the other and neither would ever serve.
-func (c *Client) Successor(ctx context.Context, startedAt int64) (Handover, bool, error) {
-	res, err := c.query(ctx, "SELECT value FROM state WHERE key = ? LIMIT 1", []string{HandoverKey})
+// providerRowRaw is the wire shape of one providers row: the JSON column
+// arrives as text and is parsed into ProviderRow by ListProviders.
+type providerRowRaw struct {
+	Index    int    `json:"index"`
+	Name     string `json:"provider"`
+	Adapter  string `json:"adapter"`
+	Endpoint string `json:"endpoint"`
+	Keys     string `json:"keys"`
+	Free     int    `json:"free"`
+}
+
+// ListProviders returns every provider in index order. A row whose JSON
+// does not parse fails the whole call: a half-read provider set would
+// route turns to the wrong keys.
+func (c *Client) ListProviders(ctx context.Context) ([]ProviderRow, error) {
+	res, err := c.query(ctx,
+		`SELECT "index", provider, adapter, endpoint, keys, free FROM providers ORDER BY "index"`,
+		nil)
 	if err != nil {
-		return Handover{}, false, err
+		return nil, err
 	}
-	list, err := queryInto[struct{ Value string }](res.rows)
-	if err != nil || len(list) == 0 || list[0].Value == "" {
-		return Handover{}, false, err
+	raws, err := queryInto[providerRowRaw](res.rows)
+	if err != nil {
+		return nil, err
 	}
-	var claim Handover
-	if err := json.Unmarshal([]byte(list[0].Value), &claim); err != nil {
-		return Handover{}, false, nil
+	out := make([]ProviderRow, 0, len(raws))
+	for _, raw := range raws {
+		var keys []string
+		if strings.TrimSpace(raw.Keys) != "" {
+			if err := json.Unmarshal([]byte(raw.Keys), &keys); err != nil {
+				return nil, fmt.Errorf("db: provider %q keys: %w", raw.Name, err)
+			}
+		}
+		out = append(out, ProviderRow{
+			Index: raw.Index, Name: raw.Name, Adapter: raw.Adapter,
+			Endpoint: raw.Endpoint, APIKeys: keys,
+			Free: raw.Free != 0,
+		})
 	}
-	if claim.At <= startedAt {
-		return Handover{}, false, nil
+	return out, nil
+}
+
+// PutProviders replaces the whole providers table with rows, numbered
+// 0, 1, 2, ... in the given order. The table is tiny (a handful of rows),
+// so a full replace keeps the daemon from ever disagreeing with D1 about
+// a provider the phone just deleted.
+func (c *Client) PutProviders(ctx context.Context, rows []ProviderRow) error {
+	if _, err := c.query(ctx, "DELETE FROM providers", nil); err != nil {
+		return err
 	}
-	return claim, true, nil
+	for i, row := range rows {
+		keys, err := json.Marshal(row.APIKeys)
+		if err != nil {
+			return fmt.Errorf("db: provider %q keys: %w", row.Name, err)
+		}
+		free := "0"
+		if row.Free {
+			free = "1"
+		}
+		_, err = c.query(ctx,
+			`INSERT INTO providers("index", provider, adapter, endpoint, keys, free)
+			 VALUES(?, ?, ?, ?, ?, ?)`,
+			[]string{strconv.Itoa(i), row.Name, row.Adapter, row.Endpoint, string(keys), free})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

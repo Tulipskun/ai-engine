@@ -1,10 +1,10 @@
 package session
 
 import (
+	"ai-engine/provider"
 	"container/list"
 	"context"
 	"errors"
-	"github.com/Tulipskun/ai-engine/provider"
 	"path/filepath"
 	"sync"
 )

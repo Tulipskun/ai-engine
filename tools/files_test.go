@@ -1,8 +1,8 @@
 package tools
 
 import (
+	"ai-engine/provider"
 	"context"
-	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"strings"

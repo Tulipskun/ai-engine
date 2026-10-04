@@ -1,8 +1,9 @@
-package state
+package db
 
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,25 +12,19 @@ import (
 	"strings"
 )
 
-// ConfigFile is one runtime config file that syncs with D1. Keys match the
-// layout already mandated by CON-001, so the local file stays the format the
-// existing loaders/savers use.
+// ConfigFile is one runtime config file that syncs with D1: the D1 state
+// key and the local path it materializes to. Providers are deliberately
+// not here — they live in the providers table, not in a state blob.
 type ConfigFile struct {
-	Key  string // D1 state key, e.g. config/provider
-	Path string // local path, e.g. <state>/config/provider.json
+	Key  string // D1 state key, e.g. config/system
+	Path string // local path, e.g. <state>/config/system.json
 }
 
-// DefaultConfigFiles lists every config file the daemon syncs with D1. The
-// Worker key charset is [A-Za-z0-9:_-], so the slash lives in the prefix.
-//
-// Providers are deliberately NOT here: they live in the D1 providers table
-// (read row by row at boot, written row by row by the admin surface), not
-// in a state blob, so the phone's provider edits never travel through the
-// file sync path.
-// config/entry.json is deliberately NOT here either: it is the gateway bootstrap (where
-// the tunnel points, whether the tunnel runs at all), so it must exist locally
-// before D1 is reachable. Syncing it would let a stale cloud copy disable the
-// gateway that is supposed to fetch the cloud copy (CHANGE-059/CON-012).
+// DefaultConfigFiles lists every config file the daemon syncs with D1.
+// config/entry.json is deliberately NOT here: it is the gateway bootstrap
+// (where the tunnel points, whether the tunnel runs at all), so it must
+// exist locally before D1 is reachable. Syncing it would let a stale cloud
+// copy disable the gateway that is supposed to fetch the cloud copy.
 func DefaultConfigFiles(stateRoot string) []ConfigFile {
 	join := func(name string) string { return filepath.Join(stateRoot, "config", name) }
 	return []ConfigFile{
@@ -37,8 +32,8 @@ func DefaultConfigFiles(stateRoot string) []ConfigFile {
 	}
 }
 
-// SyncReport records what a hydrate/push pass actually moved, so the daemon can
-// log the outcome instead of failing silently.
+// SyncReport records what a hydrate/push pass actually moved, so the daemon
+// can log the outcome instead of failing silently.
 type SyncReport struct {
 	PulledConfig    []string
 	PushedConfig    []string
@@ -55,9 +50,9 @@ func (r *SyncReport) merge(other SyncReport) {
 	r.SkippedOversize = append(r.SkippedOversize, other.SkippedOversize...)
 }
 
-// HydrateConfig writes the D1 copies of the config files into the state root.
-// A missing key leaves the local file untouched, so a first run on an empty D1
-// still boots from whatever the operator has locally.
+// HydrateConfig writes the D1 copies of the config files into the state
+// root. A missing key leaves the local file untouched, so a first run on
+// an empty D1 still boots from whatever the operator has locally.
 func (c *Client) HydrateConfig(ctx context.Context, files []ConfigFile) (SyncReport, error) {
 	var report SyncReport
 	for _, f := range files {
@@ -104,19 +99,48 @@ func (c *Client) PushConfig(ctx context.Context, files []ConfigFile) (SyncReport
 	return report, nil
 }
 
-// SessionBlob is the D1 representation of one session database: base64 of the
-// SQLite file plus a flag telling HydrateSessions whether it came from a clean
-// close. WAL contents are checkpointed by the caller before PushSession.
+// SessionBlob is the D1 representation of one session database: base64 of
+// the SQLite file plus a flag telling HydrateSessions whether it came from
+// a clean close. WAL contents are checkpointed by the caller before
+// PushSession.
 type SessionBlob struct {
 	Version int    `json:"version"`
 	Name    string `json:"name"`
 	Data    string `json:"data"`
 }
 
-// HydrateSessions restores session databases from D1 into dir, using the same
-// file naming the SDK already uses (base64url(sessionID) + ".db"). Existing
-// files are replaced only when D1 actually has a copy, so an offline daemon
-// keeps working from local state.
+// encodeBlob renders a value as JSON text: D1 stores whatever string it is
+// given, so keeping the payload structured lets Hydrate tell a session
+// blob apart from a raw config file.
+func encodeBlob(v any) (string, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// decodeBlob accepts either our JSON object or a raw string written by an
+// older build, so a D1 that already holds plain config still hydrates.
+func decodeBlob(value string, out *SessionBlob) error {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "{") {
+		return json.Unmarshal([]byte(trimmed), out)
+	}
+	var s string
+	if err := json.Unmarshal([]byte(trimmed), &s); err == nil {
+		out.Version = 0
+		out.Data = s
+		return nil
+	}
+	*out = SessionBlob{Version: 0, Data: value}
+	return nil
+}
+
+// HydrateSessions restores session databases from D1 into dir, using the
+// same file naming the session layer already uses
+// (base64url(sessionID) + ".db"). Existing files are replaced only when D1
+// actually has a copy, so an offline daemon keeps working from local state.
 func (c *Client) HydrateSessions(ctx context.Context, dir string, encodeName func(sessionID string) string) (SyncReport, error) {
 	var report SyncReport
 	keys, err := c.List(ctx, SessionKeyPrefix)
@@ -138,11 +162,11 @@ func (c *Client) HydrateSessions(ctx context.Context, dir string, encodeName fun
 		}
 		var blob SessionBlob
 		if err := decodeBlob(value, &blob); err != nil {
-			return report, fmt.Errorf("d1store: decode session %q: %w", sessionID, err)
+			return report, fmt.Errorf("db: decode session %q: %w", sessionID, err)
 		}
 		raw, err := base64.StdEncoding.DecodeString(blob.Data)
 		if err != nil {
-			return report, fmt.Errorf("d1store: session %q payload: %w", sessionID, err)
+			return report, fmt.Errorf("db: session %q payload: %w", sessionID, err)
 		}
 		if err := writeFileAtomic(filepath.Join(dir, encodeName(sessionID)), raw, 0o600); err != nil {
 			return report, err
@@ -152,8 +176,8 @@ func (c *Client) HydrateSessions(ctx context.Context, dir string, encodeName fun
 	return report, nil
 }
 
-// PushSession uploads one session database. Oversized files are skipped with a
-// report entry rather than truncated (CON-012).
+// PushSession uploads one session database. Oversized files are skipped
+// with a report entry rather than truncated (CON-012).
 func (c *Client) PushSession(ctx context.Context, sessionID, path string) (SyncReport, error) {
 	var report SyncReport
 	raw, err := os.ReadFile(path)
@@ -176,8 +200,8 @@ func (c *Client) PushSession(ctx context.Context, sessionID, path string) (SyncR
 	return report, nil
 }
 
-// PushSessions uploads several session databases, continuing past per-session
-// failures so one oversized DB cannot block the rest.
+// PushSessions uploads several session databases, continuing past
+// per-session failures so one oversized DB cannot block the rest.
 func (c *Client) PushSessions(ctx context.Context, dir string, sessionIDs []string) (SyncReport, error) {
 	var total SyncReport
 	var firstErr error
@@ -192,12 +216,14 @@ func (c *Client) PushSessions(ctx context.Context, dir string, sessionIDs []stri
 	return total, firstErr
 }
 
+// writeFileAtomic replaces a file through a temp file in the same
+// directory, so a crash mid-write never leaves a half-written config.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".d1store-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".db-*.tmp")
 	if err != nil {
 		return err
 	}

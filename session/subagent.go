@@ -1,13 +1,12 @@
-package agent
+package session
 
 import (
+	"ai-engine/io"
+	"ai-engine/provider"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/session"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +81,7 @@ type subAgentJob struct {
 	stopRequested         bool
 	reportDelivered       bool
 	input                 io.Input
-	parent                *session.Session
+	parent                *Session
 	task                  string
 	status                string
 	started               time.Time
@@ -95,7 +94,7 @@ type subAgentJob struct {
 	lastReportedToolCount int
 	midJobReports         int
 	plan                  string
-	step                  session.PlanStep
+	step                  PlanStep
 	planned               bool
 	cancel                context.CancelFunc
 	done                  chan struct{}
@@ -107,11 +106,11 @@ type subAgentJob struct {
 // terminal state (REQ-019, REQ-021).
 type SubAgentEvent struct {
 	Kind         string
-	Parent       *session.Session
+	Parent       *Session
 	JobID        string
 	Status       string
 	Report       string
-	PlanStep     session.PlanStep
+	PlanStep     PlanStep
 	PlanRevision uint64
 	Input        io.Input
 	Trace        *io.TraceEvent
@@ -148,11 +147,11 @@ func newSubAgentManager(agent *Agent, cfg SubAgentConfig) *subAgentManager {
 // boundOf is the session's view of one delegated job: identity plus the plan and
 // step it was started under. The session stores that much and nothing more, so
 // delegation policy stays on this side of the boundary.
-func boundOf(job *subAgentJob) *session.BoundJob {
+func boundOf(job *subAgentJob) *BoundJob {
 	if job == nil {
 		return nil
 	}
-	return &session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}
+	return &BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}
 }
 
 // followUp is the one call for "send more work into this worker session". It
@@ -162,7 +161,7 @@ func boundOf(job *subAgentJob) *session.BoundJob {
 // otherwise it is follow-on work and attaches to the current ready step through
 // startContinue. Before this existed the retry branch of start was unreachable,
 // so a failed step had no recovery path at all (CHANGE-099).
-func (m *subAgentManager) followUp(parent *session.Session, task, id string, input io.Input) (string, error) {
+func (m *subAgentManager) followUp(parent *Session, task, id string, input io.Input) (string, error) {
 	id = strings.TrimSpace(id)
 	if m == nil || parent == nil {
 		return "", errors.New("sdk: sub-agent is not configured")
@@ -182,7 +181,7 @@ func (m *subAgentManager) followUp(parent *session.Session, task, id string, inp
 	return m.startContinue(parent, task, prev.id, input)
 }
 
-func (m *subAgentManager) start(parent *session.Session, task, previous string, input io.Input) (string, error) {
+func (m *subAgentManager) start(parent *Session, task, previous string, input io.Input) (string, error) {
 	m.mu.Lock()
 	job, err := m.startLocked(parent, task, previous, input)
 	if err != nil {
@@ -194,7 +193,7 @@ func (m *subAgentManager) start(parent *session.Session, task, previous string, 
 	return job.id, nil
 }
 
-func (m *subAgentManager) startContinue(parent *session.Session, task, previous string, input io.Input) (string, error) {
+func (m *subAgentManager) startContinue(parent *Session, task, previous string, input io.Input) (string, error) {
 	m.mu.Lock()
 	job, err := m.startContinueLocked(parent, task, previous, input)
 	if err != nil {
@@ -206,7 +205,7 @@ func (m *subAgentManager) startContinue(parent *session.Session, task, previous 
 	return job.id, nil
 }
 
-func (m *subAgentManager) startLocked(parent *session.Session, task, previous string, input io.Input) (*subAgentJob, error) {
+func (m *subAgentManager) startLocked(parent *Session, task, previous string, input io.Input) (*subAgentJob, error) {
 	if m == nil || m.agent == nil || parent == nil {
 		return nil, errors.New("sdk: sub-agent is not configured")
 	}
@@ -230,10 +229,10 @@ func (m *subAgentManager) startLocked(parent *session.Session, task, previous st
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	job := &subAgentJob{id: id, workerID: parent.ID() + ":subagent:" + id, parent: parent, task: task, status: "running", started: time.Now(), cancel: cancel, step: step, planned: planned, revision: plan.Revision, input: cloneInputRoute(input), done: make(chan struct{})}
+	job := &subAgentJob{id: id, workerID: parent.ID() + ":subagent:" + id, parent: parent, task: task, status: "running", started: time.Now(), cancel: cancel, step: step, planned: planned, revision: plan.Revision, input: io.CloneInputRoute(input), done: make(chan struct{})}
 	if retry != nil {
 		job.workerID = retry.workerID
-		job.input = cloneInputRoute(retry.input)
+		job.input = io.CloneInputRoute(retry.input)
 		retry.superseded = true
 	}
 	if planned {
@@ -244,7 +243,7 @@ func (m *subAgentManager) startLocked(parent *session.Session, task, previous st
 	return job, nil
 }
 
-func (m *subAgentManager) startContinueLocked(parent *session.Session, task, previous string, input io.Input) (*subAgentJob, error) {
+func (m *subAgentManager) startContinueLocked(parent *Session, task, previous string, input io.Input) (*subAgentJob, error) {
 	if m == nil || m.agent == nil || parent == nil {
 		return nil, errors.New("sdk: sub-agent is not configured")
 	}
@@ -269,7 +268,7 @@ func (m *subAgentManager) startContinueLocked(parent *session.Session, task, pre
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	job := &subAgentJob{id: id, workerID: prev.workerID, parent: parent, task: task, status: "running", started: time.Now(), cancel: cancel, step: step, planned: planned, revision: plan.Revision, input: cloneInputRoute(prev.input), done: make(chan struct{})}
+	job := &subAgentJob{id: id, workerID: prev.workerID, parent: parent, task: task, status: "running", started: time.Now(), cancel: cancel, step: step, planned: planned, revision: plan.Revision, input: io.CloneInputRoute(prev.input), done: make(chan struct{})}
 	if planned {
 		job.plan = formatPlan(plan)
 	}
@@ -379,7 +378,7 @@ func (m *subAgentManager) run(job *subAgentJob) {
 	if deliver {
 		final = m.reportLocked(job)
 		job.reportDelivered = true
-		report = cloneInputRoute(job.input)
+		report = io.CloneInputRoute(job.input)
 	}
 	m.mu.Unlock()
 	if deliver {
@@ -403,7 +402,7 @@ func (m *subAgentManager) emitTrace(job *subAgentJob, event io.TraceEvent) {
 		return
 	}
 	trace := event
-	sink(SubAgentEvent{Parent: job.parent, JobID: job.id, Status: job.status, PlanStep: job.step, PlanRevision: job.revision, Input: cloneInputRoute(job.input), Trace: &trace})
+	sink(SubAgentEvent{Parent: job.parent, JobID: job.id, Status: job.status, PlanStep: job.step, PlanRevision: job.revision, Input: io.CloneInputRoute(job.input), Trace: &trace})
 }
 
 // shouldReportProgress is the hybrid milestone plus anomaly gate: a mid-job
@@ -480,7 +479,7 @@ func (m *subAgentManager) emitProgress(job *subAgentJob) {
 	report := m.progressLocked(job)
 	job.lastReportedToolCount = job.completedToolCalls
 	job.midJobReports++
-	input := cloneInputRoute(job.input)
+	input := io.CloneInputRoute(job.input)
 	m.mu.Unlock()
 	m.eventMu.RLock()
 	sink := m.sink
@@ -560,7 +559,7 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (prov
 	if workspace == "" {
 		workspace = strings.TrimSpace(m.cfg.Workspace)
 	}
-	ctx = session.WithWorkspace(ctx, workspace)
+	ctx = WithWorkspace(ctx, workspace)
 	// The worker's session is resolved exactly like a chat's: same table, same
 	// key rules, same eviction. Only a worker's first delegation is shaped by
 	// this contract — a follow-up or continued job keeps the stored session, so
@@ -705,7 +704,7 @@ func oneLineText(text string) string { return strings.Join(strings.Fields(text),
 
 // statusText renders one-line job state; kept for non-LLM diagnostics only
 // (the model-facing status/history tools were removed with CHANGE-022).
-func (m *subAgentManager) statusText(parent *session.Session, id string) string {
+func (m *subAgentManager) statusText(parent *Session, id string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job := m.jobs[id]
@@ -736,7 +735,7 @@ func (m *subAgentManager) statusText(parent *session.Session, id string) string 
 	return text
 }
 
-func (m *subAgentManager) result(parent *session.Session, id, verification string) (string, error) {
+func (m *subAgentManager) result(parent *Session, id, verification string) (string, error) {
 	m.mu.Lock()
 	job := m.jobs[strings.TrimSpace(id)]
 	if job == nil || job.parent != parent {
@@ -774,7 +773,7 @@ func (m *subAgentManager) SetTraceSink(sink func(SubAgentEvent)) {
 	m.eventMu.Unlock()
 }
 
-func formatPlan(plan session.PlanState) string {
+func formatPlan(plan PlanState) string {
 	var b strings.Builder
 	for _, step := range plan.Steps {
 		b.WriteString(fmt.Sprintf("%d. %s\n", step.Index, step.Text))
@@ -784,7 +783,7 @@ func formatPlan(plan session.PlanState) string {
 
 // stop blocks until the job has actually stopped and returns the final
 // report inline (REQ-020, REQ-034).
-func (m *subAgentManager) stop(ctx context.Context, parent *session.Session, id string) (string, error) {
+func (m *subAgentManager) stop(ctx context.Context, parent *Session, id string) (string, error) {
 	m.mu.Lock()
 	job := m.jobs[id]
 	if job == nil || job.parent != parent {
@@ -835,7 +834,7 @@ func (m *subAgentManager) RequestStop(parentID, id string) error {
 	return nil
 }
 
-func (m *subAgentManager) Accept(parent *session.Session, id, verification string) error {
+func (m *subAgentManager) Accept(parent *Session, id, verification string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job := m.jobs[id]
@@ -855,14 +854,14 @@ func (m *subAgentManager) Accept(parent *session.Session, id, verification strin
 
 type subAgentRunner struct {
 	manager *subAgentManager
-	parent  *session.Session
+	parent  *Session
 }
 
 func (r *subAgentRunner) Delegate(ctx context.Context, task string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	input, _ := ctx.Value(lifecycleInputKey{}).(io.Input)
+	input, _ := ctx.Value(io.LifecycleInputKey{}).(io.Input)
 	return r.manager.start(r.parent, task, "", input)
 }
 func (r *subAgentRunner) Status(id string) string { return r.manager.statusText(r.parent, id) }
@@ -883,7 +882,7 @@ func (r *subAgentRunner) Message(ctx context.Context, id, message string) (strin
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	input, _ := ctx.Value(lifecycleInputKey{}).(io.Input)
+	input, _ := ctx.Value(io.LifecycleInputKey{}).(io.Input)
 	return r.manager.followUp(r.parent, message, id, input)
 }
 

@@ -1,11 +1,11 @@
 package gateway
 
 import (
+	"ai-engine/provider"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
 	"log"
 	"net"
 	"net/http"
@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/io"
+	"ai-engine/io"
 	"github.com/gorilla/websocket"
 )
 

@@ -1,13 +1,13 @@
 package registry
 
 import (
+	"ai-engine/provider"
+	"ai-engine/provider/anthropic"
+	"ai-engine/provider/gemini"
+	"ai-engine/provider/openai"
+	"ai-engine/provider/opencode"
 	"context"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/provider/anthropic"
-	"github.com/Tulipskun/ai-engine/provider/gemini"
-	"github.com/Tulipskun/ai-engine/provider/openai"
-	"github.com/Tulipskun/ai-engine/provider/opencode"
 )
 
 type Runtime struct {

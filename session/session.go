@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Tulipskun/ai-engine/provider"
+	"ai-engine/provider"
 )
 
 type PlanStep struct {

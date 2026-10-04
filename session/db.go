@@ -1,10 +1,10 @@
 package session
 
 import (
+	"ai-engine/provider"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"strings"

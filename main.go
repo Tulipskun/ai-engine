@@ -10,12 +10,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Tulipskun/ai-engine/agent"
-	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/io/state"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/provider/registry"
-	"github.com/Tulipskun/ai-engine/session"
+	"ai-engine/db"
+	"ai-engine/io"
+	"ai-engine/provider"
+	"ai-engine/provider/registry"
+	"ai-engine/session"
 )
 
 // version is stamped at build time (-ldflags "-X main.version=...");
@@ -64,9 +63,9 @@ func main() {
 	if cfToken == "" {
 		log.Fatal("ai-engine: CF_TOKEN is not set")
 	}
-	tokens := state.NewMemoryToken()
-	client := state.NewClient(state.DefaultAPIBase, tokens.Get)
-	client.SetDatabaseName(state.DefaultDatabaseName)
+	tokens := db.NewMemoryToken()
+	client := db.NewClient(db.DefaultAPIBase, tokens.Get)
+	client.SetDatabaseName(db.DefaultDatabaseName)
 	if err := client.VerifyToken(ctx, cfToken); err != nil {
 		log.Fatalf("ai-engine: CF_TOKEN is invalid or inactive: %v", err)
 	}
@@ -107,7 +106,7 @@ func main() {
 	}
 	manager := registry.NewProviderManager(providerPath, runtime, providerConfig)
 
-	systemCfg, err := agent.LoadSystemConfig(filepath.Join(root, "config", "system.json"))
+	systemCfg, err := session.LoadSystemConfig(filepath.Join(root, "config", "system.json"))
 	if err != nil {
 		log.Fatalf("ai-engine: system config: %v", err)
 	}
@@ -181,7 +180,7 @@ func main() {
 	})
 	mobile.transport.SetAdminStore(admin)
 
-	harness := &agent.HarnessLoop{
+	harness := &HarnessLoop{
 		Client: runtime.Client,
 		Agent:  ag,
 		Source: mobile.transport,
@@ -219,7 +218,7 @@ func main() {
 
 // providerRowsToFile renders D1 provider rows as the file shape, so the
 // table can be materialized to disk through the single file writer.
-func providerRowsToFile(rows []state.ProviderRow) registry.ProviderFileConfig {
+func providerRowsToFile(rows []db.ProviderRow) registry.ProviderFileConfig {
 	file := registry.ProviderFileConfig{Providers: make([]registry.ProviderFile, 0, len(rows))}
 	for _, row := range rows {
 		file.Providers = append(file.Providers, registry.ProviderFile{
@@ -233,10 +232,10 @@ func providerRowsToFile(rows []state.ProviderRow) registry.ProviderFileConfig {
 
 // providerFileToRows renders the file shape as D1 provider rows. Index is
 // assigned by PutProviders in order, so it is not set here.
-func providerFileToRows(file registry.ProviderFileConfig) []state.ProviderRow {
-	rows := make([]state.ProviderRow, 0, len(file.Providers))
+func providerFileToRows(file registry.ProviderFileConfig) []db.ProviderRow {
+	rows := make([]db.ProviderRow, 0, len(file.Providers))
 	for _, p := range file.Providers {
-		rows = append(rows, state.ProviderRow{
+		rows = append(rows, db.ProviderRow{
 			Name: p.Name, Adapter: p.Adapter, Endpoint: p.HTTPEndpoint,
 			APIKeys: append([]string(nil), p.APIKeys...),
 			Free:    p.FreeOnly,
@@ -249,7 +248,7 @@ func providerFileToRows(file registry.ProviderFileConfig) []state.ProviderRow {
 // providers table once, on the first boot after the move. The blob itself
 // is left alone: the migration only reads, so a failed seed can always be
 // retried on the next boot.
-func seedProvidersFromBlob(ctx context.Context, client *state.Client) []state.ProviderRow {
+func seedProvidersFromBlob(ctx context.Context, client *db.Client) []db.ProviderRow {
 	raw, found, err := client.Get(ctx, "config:provider")
 	if err != nil || !found {
 		return nil
@@ -271,7 +270,7 @@ func seedProvidersFromBlob(ctx context.Context, client *state.Client) []state.Pr
 // session's route, the Main Agent prompt and the instruction files. The
 // agent fills in the per-attempt tools and the planning prompt itself, so
 // the request stays the minimal shape the loop needs.
-func buildRequest(ag *agent.Agent) agent.RequestResolver {
+func buildRequest(ag *session.Agent) RequestResolver {
 	return func(ctx context.Context, input io.Input, sess *session.Session) (provider.Request, error) {
 		cfg := sess.Config()
 		return provider.Request{

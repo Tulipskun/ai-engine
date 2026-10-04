@@ -1,11 +1,11 @@
-package agent
+package session
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/Tulipskun/ai-engine/provider"
+	"ai-engine/provider"
 )
 
 func TestSaveSystemConfigRoundTripsThroughItsLoader(t *testing.T) {

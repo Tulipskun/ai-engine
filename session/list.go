@@ -1,9 +1,9 @@
 package session
 
 import (
+	"ai-engine/provider"
 	"encoding/base64"
 	"errors"
-	"github.com/Tulipskun/ai-engine/provider"
 	"os"
 	"path/filepath"
 	"sort"

@@ -1,12 +1,11 @@
-package agent
+package session
 
 import (
+	"ai-engine/io"
+	"ai-engine/provider"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/session"
 	"sync"
 	"time"
 )
@@ -17,8 +16,8 @@ var ErrAgentRetriesExhausted = errors.New("sdk: agent retries exhausted")
 // because the loop is the consumer: it needs "give me the session for this id"
 // and nothing about how one is stored.
 type SessionResolver interface {
-	Resolve(ctx context.Context, id string) (*session.Session, error)
-	ResolveWorker(ctx context.Context, id string, firstTime func(*provider.SessionConfig)) (*session.Session, error)
+	Resolve(ctx context.Context, id string) (*Session, error)
+	ResolveWorker(ctx context.Context, id string, firstTime func(*provider.SessionConfig)) (*Session, error)
 }
 
 type ToolExecutor interface {
@@ -61,15 +60,15 @@ func (a *Agent) subAgentManager() *subAgentManager {
 	return a.subAgents
 }
 
-func (a *Agent) RunTurn(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request) (provider.Response, error) {
+func (a *Agent) RunTurn(ctx context.Context, sessionLocal *Session, user provider.Turn, req provider.Request) (provider.Response, error) {
 	return a.runTurn(ctx, sessionLocal, user, req, nil, nil)
 }
 
-func (a *Agent) RunTurnWithTrace(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace io.TraceFunc) (provider.Response, error) {
+func (a *Agent) RunTurnWithTrace(ctx context.Context, sessionLocal *Session, user provider.Turn, req provider.Request, trace io.TraceFunc) (provider.Response, error) {
 	return a.runTurn(ctx, sessionLocal, user, req, trace, nil)
 }
 
-func (a *Agent) RunTurnWithTraceAndEntry(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace io.TraceFunc, entry func(context.Context, io.Input) error) (provider.Response, error) {
+func (a *Agent) RunTurnWithTraceAndEntry(ctx context.Context, sessionLocal *Session, user provider.Turn, req provider.Request, trace io.TraceFunc, entry func(context.Context, io.Input) error) (provider.Response, error) {
 	return a.runTurn(ctx, sessionLocal, user, req, trace, entry)
 }
 
@@ -133,7 +132,7 @@ func (a *Agent) beginInterrupt(ctx context.Context, sessionID string) (context.C
 	}
 }
 
-func (a *Agent) runTurn(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace io.TraceFunc, entry func(context.Context, io.Input) error) (provider.Response, error) {
+func (a *Agent) runTurn(ctx context.Context, sessionLocal *Session, user provider.Turn, req provider.Request, trace io.TraceFunc, entry func(context.Context, io.Input) error) (provider.Response, error) {
 	if a == nil || a.Client == nil || sessionLocal == nil {
 		return provider.Response{}, errors.New("sdk: incomplete agent configuration")
 	}
@@ -211,14 +210,14 @@ func (a *Agent) runTurn(ctx context.Context, sessionLocal *session.Session, user
 // planningFor reports whether this session answers through the Main Agent
 // planner or as a worker. The answer lives on the session, so a phone's chat
 // and a worker's own session are decided by exactly one field (REQ-029).
-func (a *Agent) planningFor(sessionLocal *session.Session) bool {
+func (a *Agent) planningFor(sessionLocal *Session) bool {
 	if sessionLocal == nil {
 		return true
 	}
 	return sessionLocal.Config().AgentMode != provider.AgentModeSub
 }
 
-func (a *Agent) runAttempt(ctx context.Context, sessionLocal *session.Session, user provider.Turn, req provider.Request, trace io.TraceFunc, backoff *retryBackoff, entry func(context.Context, io.Input) error, clock *turnClock) (provider.Response, error) {
+func (a *Agent) runAttempt(ctx context.Context, sessionLocal *Session, user provider.Turn, req provider.Request, trace io.TraceFunc, backoff *retryBackoff, entry func(context.Context, io.Input) error, clock *turnClock) (provider.Response, error) {
 	var executor ToolExecutor
 	if a.planningFor(sessionLocal) {
 		executor = newPlanningToolExecutor(a.Tools, sessionLocal)
@@ -266,7 +265,7 @@ func (a *Agent) runAttempt(ctx context.Context, sessionLocal *session.Session, u
 		if backoff != nil {
 			backoff.Reset()
 		}
-		session.CommitResponse(sessionLocal, resp)
+		CommitResponse(sessionLocal, resp)
 
 		if len(resp.Content) > 0 {
 			traceEvent(ctx, trace, newTraceEvent(io.TraceResponseContent, withResponse(resp)))
@@ -333,7 +332,7 @@ func (a *Agent) runAttempt(ctx context.Context, sessionLocal *session.Session, u
 	}
 }
 
-func (a *Agent) runStreamAttempt(ctx context.Context, sessionLocal *session.Session, req provider.Request, trace io.TraceFunc, backoff *retryBackoff, entry func(context.Context, io.Input) error) (provider.Response, error) {
+func (a *Agent) runStreamAttempt(ctx context.Context, sessionLocal *Session, req provider.Request, trace io.TraceFunc, backoff *retryBackoff, entry func(context.Context, io.Input) error) (provider.Response, error) {
 	clock := &turnClock{}
 	if trace != nil {
 		inner := trace
@@ -445,7 +444,7 @@ func (a *Agent) runStreamAttempt(ctx context.Context, sessionLocal *session.Sess
 			backoff.Reset()
 		}
 
-		session.CommitResponse(sessionLocal, resp)
+		CommitResponse(sessionLocal, resp)
 		if len(resp.ToolCalls) == 0 {
 			traceEvent(ctx, trace, io.TraceEvent{Stage: io.TraceResponse, Response: cloneResponseContent(resp)})
 			return resp, nil
@@ -502,7 +501,7 @@ func (a *Agent) runStreamAttempt(ctx context.Context, sessionLocal *session.Sess
 	}
 }
 
-func settleInterruptedTurn(sessionLocal *session.Session, before []provider.Turn) {
+func settleInterruptedTurn(sessionLocal *Session, before []provider.Turn) {
 	if sessionLocal == nil {
 		return
 	}
@@ -657,7 +656,7 @@ func isKeyRejection(err error) bool {
 // rotateToNextKey moves the session onto the next key in its pool, and reports
 // whether there was one left to try. tried counts the keys already presented, so
 // each key is used once and the turn then fails for real.
-func rotateToNextKey(sessionLocal *session.Session, tried int) bool {
+func rotateToNextKey(sessionLocal *Session, tried int) bool {
 	pool := sessionLocal.KeyPoolSize()
 	if pool <= 1 || tried >= pool {
 		return false

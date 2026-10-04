@@ -1,23 +1,22 @@
-package agent
+package session
 
 import (
-	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/session"
+	"ai-engine/io"
+	"ai-engine/provider"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // REQ-019/REQ-020: one running job per parent, plan/step identity on every
-// transition, and a failed step must be recoverable in the same worker session.
+// transition, and a failed step must be recoverable in the same worker
 // The reservation layer is exercised directly so the tests stay deterministic
 // and never start a provider call.
 
-func newTestSession(t *testing.T, id string) *session.Session {
+func newTestSession(t *testing.T, id string) *Session {
 	t.Helper()
-	sessionLocal, err := session.OpenSession(
-		filepath.Join(t.TempDir(), "session.db"),
+	sessionLocal, err := OpenSession(
+		filepath.Join(t.TempDir(), "db"),
 		provider.SessionConfig{ID: id, Provider: "test-provider", Model: "test-model"},
 		provider.NewKeyPool("test-key"),
 	)
@@ -40,7 +39,7 @@ func (m *subAgentManager) finishForTest(job *subAgentJob, status string) {
 	m.mu.Lock()
 	job.status, job.reviewed, job.reportDelivered = status, true, true
 	m.mu.Unlock()
-	job.parent.FinishSubAgent(session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}, status)
+	job.parent.FinishSubAgent(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}, status)
 }
 
 func TestReservationRejectsASecondRunningJob(t *testing.T) {
@@ -89,7 +88,7 @@ func TestFailedStepBindsItsJobForRetry(t *testing.T) {
 	}
 	// This predicate is what routes a follow-up to the retry branch, so a failed
 	// step has to bind its job: otherwise the step can never be retried.
-	if !parent.BindsCurrentStep(session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
+	if !parent.BindsCurrentStep(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
 		t.Fatal("a failed step must bind its job so a follow-up retries that step")
 	}
 
@@ -124,7 +123,7 @@ func TestAcceptedStepDoesNotBindItsJob(t *testing.T) {
 
 	// After acceptance the plan moved on, so more work for that job is follow-on
 	// work attached to the new current step, not a retry of the finished one.
-	if parent.BindsCurrentStep(session.BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
+	if parent.BindsCurrentStep(BoundJob{ID: job.id, Revision: job.revision, Planned: job.planned, Step: job.step.Index}) {
 		t.Fatal("an accepted step must not keep binding its job")
 	}
 	next, err := manager.startContinueLocked(parent, "new work", job.id, io.Input{})
