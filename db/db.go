@@ -125,7 +125,7 @@ func SaveTunnel(url string) error {
 	if _, err := Query("CREATE TABLE IF NOT EXISTS tunnel (url TEXT NOT NULL)"); err != nil {
 		return err
 	}
-	if _, err := Query("DELETE FROM tunnel"); err != nil {
+	if err := Delete("tunnel"); err != nil {
 		return err
 	}
 
@@ -200,6 +200,27 @@ func Update(table string, data map[string]any, where ...Where) (int64, error) {
 		return 0, err
 	}
 	return affectedRows(rows), nil
+}
+
+func Delete(table string, where ...Where) error {
+	if err := validateIdentifier(table); err != nil {
+		return err
+	}
+
+	sql := "DELETE FROM " + table
+	var params []any
+
+	if len(where) > 0 && len(where[0]) > 0 {
+		clause, values, err := buildWhere(where[0])
+		if err != nil {
+			return err
+		}
+		sql += " WHERE " + clause
+		params = values
+	}
+
+	_, err := Query(sql, params...)
+	return err
 }
 
 func Query(sql string, params ...any) ([]map[string]any, error) {
