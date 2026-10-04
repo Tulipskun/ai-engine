@@ -31,7 +31,7 @@ no screen control, no background job manager and no `web_fetch` tool — `bash`
 
 ## Gateway and state
 
-- **One ingress**: `transport/mobile` listens on localhost and publishes itself
+- **One ingress**: `io/gateway` listens on localhost and publishes itself
   with `cloudflared tunnel --url …`. The daemon writes the random URL into the
   D1 `nodes` row as its own heartbeat — and answers `GET /api/node` with the same
   values — so a client can find it through either route.
@@ -40,7 +40,7 @@ no screen control, no background job manager and no `web_fetch` tool — `bash`
   verified against Cloudflare (`GET /user/tokens/verify`) before the socket is
   upgraded. Missing header → 401; five wrong tokens → 429 and a progressive
   lockout (30 → 60 → 120 → 240 → 300s); Cloudflare unreachable → 503, fail closed.
-- **Stateless** (CON-012): `runtime/d1store` pulls `config:*` and
+- **Stateless** (CON-012): `io/state` pulls `config:*` and
   `sessions/<id>` from D1 into the state root after the first verified
   connection and pushes changes back. Local files stay a cache, so wiping
   `~/.local/share/ai` is recoverable.

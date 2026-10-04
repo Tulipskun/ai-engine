@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/runtime/d1store"
+	"github.com/Tulipskun/ai-engine/io/gateway"
+	"github.com/Tulipskun/ai-engine/io/state"
 	"github.com/Tulipskun/ai-engine/session"
-	mobiletransport "github.com/Tulipskun/ai-engine/transport/mobile"
 )
 
 // mobileRuntime owns the stateless-mobile wiring for one daemon process
@@ -23,9 +23,9 @@ import (
 // phone presents — in memory only, hydrates runtime state from D1 once the
 // first verified connection arrives, and pushes local state back up (CON-012).
 type mobileRuntime struct {
-	transport  *mobiletransport.Transport
-	client     *d1store.Client
-	tokens     *d1store.MemoryToken
+	transport  *gateway.Transport
+	client     *state.Client
+	tokens     *state.MemoryToken
 	stateRoot  string
 	sessionDir string
 	cfg        runtimeMobileConfig
@@ -81,10 +81,10 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 		// arrives with the phone's handshake. An empty override means the
 		// default API base, not "no D1" — returning (nil, nil) here used to
 		// crash the caller with a nil dereference on secretless boot.
-		api = d1store.DefaultAPIBase
+		api = state.DefaultAPIBase
 	}
-	tokens := d1store.NewMemoryToken()
-	client := d1store.NewClient(api, tokens.Get)
+	tokens := state.NewMemoryToken()
+	client := state.NewClient(api, tokens.Get)
 	client.SetDatabaseName(cfg.d1Database)
 	rt := &mobileRuntime{
 		client:          client,
@@ -94,7 +94,7 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 		cfg:             cfg,
 		reloadProviders: reloadProviders,
 	}
-	rt.transport = mobiletransport.New(mobiletransport.Config{
+	rt.transport = gateway.New(gateway.Config{
 		// The build label travels into the D1 nodes row, so the phone's daemon
 		// card and a D1 query both name the build that is actually serving.
 		Version:      version,
@@ -143,7 +143,7 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 // and keeps the choice on the chat, so a restart does not lose it.
 type modelStore struct {
 	router   *provider.Router
-	client   *d1store.Client
+	client   *state.Client
 	sessions *session.SessionManager
 	// workingModel is the admin store's verified model per provider, so the
 	// phone's pickers default to a model that is known to answer.
@@ -152,30 +152,30 @@ type modelStore struct {
 
 // adminSettings reads the global agent defaults (config:system) from D1.
 // Called by ResolveAgentConfig to fall back when a session has no pin.
-func (m modelStore) adminSettings(ctx context.Context) (mobiletransport.SettingsView, error) {
+func (m modelStore) adminSettings(ctx context.Context) (gateway.SettingsView, error) {
 	val, found, err := m.client.Get(ctx, "config:system")
 	if err != nil {
-		return mobiletransport.SettingsView{}, err
+		return gateway.SettingsView{}, err
 	}
 	if !found {
-		return mobiletransport.SettingsView{}, nil
+		return gateway.SettingsView{}, nil
 	}
-	var cfg mobiletransport.SettingsView
+	var cfg gateway.SettingsView
 	if err := json.Unmarshal([]byte(val), &cfg); err != nil {
-		return mobiletransport.SettingsView{}, fmt.Errorf("decode config:system: %w", err)
+		return gateway.SettingsView{}, fmt.Errorf("decode config:system: %w", err)
 	}
 	return cfg, nil
 }
 
-func (m modelStore) Providers(context.Context) ([]mobiletransport.ProviderView, error) {
+func (m modelStore) Providers(context.Context) ([]gateway.ProviderView, error) {
 	if m.router == nil {
 		return nil, errors.New("runtime: router is not available")
 	}
-	out := make([]mobiletransport.ProviderView, 0, len(m.router.ProviderIDs()))
+	out := make([]gateway.ProviderView, 0, len(m.router.ProviderIDs()))
 	for _, id := range m.router.ProviderIDs() {
-		view := mobiletransport.ProviderView{ID: string(id), Name: string(id), Models: []mobiletransport.ModelView{}}
+		view := gateway.ProviderView{ID: string(id), Name: string(id), Models: []gateway.ModelView{}}
 		for _, model := range m.router.Models(id) {
-			view.Models = append(view.Models, mobiletransport.ModelView{
+			view.Models = append(view.Models, gateway.ModelView{
 				ID: model.ID, Name: model.Name,
 				SupportsTools: model.SupportsTools, SupportsTemperature: model.SupportsTemperature,
 				SupportsStreaming: model.SupportsStreaming, SupportsThinking: model.SupportsThinking,
@@ -202,16 +202,16 @@ func (m modelStore) Providers(context.Context) ([]mobiletransport.ProviderView, 
 	return out, nil
 }
 
-func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choice mobiletransport.ModelChoice) (mobiletransport.SessionRow, error) {
+func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choice gateway.ModelChoice) (gateway.SessionRow, error) {
 	if m.router == nil || m.client == nil {
-		return mobiletransport.SessionRow{}, errors.New("runtime: model routing is not available")
+		return gateway.SessionRow{}, errors.New("runtime: model routing is not available")
 	}
 	if choice.Clear {
 		// Explicitly follow the global agent defaults again. The D1 pin is
 		// removed and the cached live session is forgotten, so the next turn
 		// cannot keep using the old route from memory.
 		if err := m.client.SetSessionRoute(ctx, sessionID, "", ""); err != nil {
-			return mobiletransport.SessionRow{}, err
+			return gateway.SessionRow{}, err
 		}
 		if m.sessions != nil {
 			m.sessions.Forget(sessionID)
@@ -220,7 +220,7 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 	}
 	mainChanged, providerLocal, model, err := sessionRouteChange(choice, m.router)
 	if err != nil {
-		return mobiletransport.SessionRow{}, err
+		return gateway.SessionRow{}, err
 	}
 	subProvider := strings.TrimSpace(choice.SubProvider)
 	subModel := strings.TrimSpace(choice.SubModel)
@@ -234,10 +234,10 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 	switch {
 	case subProvider != "" && subModel != "":
 		if _, err := m.router.Resolve(provider.ProviderID(subProvider), subModel); err != nil {
-			return mobiletransport.SessionRow{}, fmt.Errorf("sub agent %s/%s is not available: %w", subProvider, subModel, err)
+			return gateway.SessionRow{}, fmt.Errorf("sub agent %s/%s is not available: %w", subProvider, subModel, err)
 		}
 	case subProvider != "" || subModel != "":
-		return mobiletransport.SessionRow{}, fmt.Errorf("sub agent %q has no model %q", subProvider, subModel)
+		return gateway.SessionRow{}, fmt.Errorf("sub agent %q has no model %q", subProvider, subModel)
 	}
 	generationChanged := choice.Generation != nil || choice.ClearGeneration
 	if !mainChanged && !subRouteChanged && subEnabled == nil && !generationChanged {
@@ -247,12 +247,12 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 		return m.sessionRow(ctx, sessionID)
 	}
 	if generationChanged {
-		g := mobiletransport.GenerationSettings{}
+		g := gateway.GenerationSettings{}
 		if choice.Generation != nil {
 			g = *choice.Generation
 		}
 		if err := m.applySessionGeneration(ctx, sessionID, g, choice.ClearGeneration, choice.ClearKnobs); err != nil {
-			return mobiletransport.SessionRow{}, fmt.Errorf("generation settings: %w", err)
+			return gateway.SessionRow{}, fmt.Errorf("generation settings: %w", err)
 		}
 	}
 	if !mainChanged && !subRouteChanged && subEnabled == nil {
@@ -261,15 +261,15 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 	}
 	if mainChanged {
 		if err := m.client.SetSessionRoute(ctx, sessionID, string(providerLocal), model); err != nil {
-			return mobiletransport.SessionRow{}, err
+			return gateway.SessionRow{}, err
 		}
 	}
 	if err := m.client.SetSessionSubAgent(ctx, sessionID, subProvider, subModel, subEnabled, subRouteChanged); err != nil {
-		return mobiletransport.SessionRow{}, err
+		return gateway.SessionRow{}, err
 	}
 	row, err := m.sessionRow(ctx, sessionID)
 	if err != nil {
-		return mobiletransport.SessionRow{}, err
+		return gateway.SessionRow{}, err
 	}
 	if m.sessions != nil {
 		session, err := m.sessions.Resolve(ctx, sessionID)
@@ -282,15 +282,15 @@ func (m modelStore) SetSessionModel(ctx context.Context, sessionID string, choic
 	return row, nil
 }
 
-func (m modelStore) SessionModel(ctx context.Context, sessionID string) (mobiletransport.ModelChoice, bool, error) {
+func (m modelStore) SessionModel(ctx context.Context, sessionID string) (gateway.ModelChoice, bool, error) {
 	cfg, err := m.ResolveAgentConfig(ctx, sessionID)
 	if err != nil {
-		return mobiletransport.ModelChoice{}, false, err
+		return gateway.ModelChoice{}, false, err
 	}
 	if !cfg.Pinned && !cfg.SubPinned {
-		return mobiletransport.ModelChoice{}, false, nil
+		return gateway.ModelChoice{}, false, nil
 	}
-	return mobiletransport.ModelChoice{
+	return gateway.ModelChoice{
 		Provider: cfg.Provider, Model: cfg.Model,
 		SubProvider: cfg.SubProvider, SubModel: cfg.SubModel, SubEnabled: &cfg.SubEnabled,
 	}, true, nil
@@ -299,12 +299,12 @@ func (m modelStore) SessionModel(ctx context.Context, sessionID string) (mobilet
 // ResolveAgentConfig returns the effective per-session agent setup: session
 // pins when present, else the global agent defaults (config:system). This is
 // the ACP session-config pattern: each chat carries its own config options.
-func (m modelStore) ResolveAgentConfig(ctx context.Context, sessionID string) (mobiletransport.SessionAgentConfig, error) {
+func (m modelStore) ResolveAgentConfig(ctx context.Context, sessionID string) (gateway.SessionAgentConfig, error) {
 	row, found, err := m.client.GetSession(ctx, sessionID)
 	if err != nil {
-		return mobiletransport.SessionAgentConfig{}, err
+		return gateway.SessionAgentConfig{}, err
 	}
-	cfg := mobiletransport.SessionAgentConfig{}
+	cfg := gateway.SessionAgentConfig{}
 	if found {
 		cfg.Provider = row.Provider
 		cfg.Model = row.Model
@@ -352,14 +352,14 @@ func (m modelStore) ResolveAgentConfig(ctx context.Context, sessionID string) (m
 }
 
 // storedGeneration is the emptiness test on the SDK shape.
-func storedGeneration(g provider.GenerationSettings) mobiletransport.GenerationSettings {
+func storedGeneration(g provider.GenerationSettings) gateway.GenerationSettings {
 	return fromSDK(g)
 }
 
 // toSDK converts the wire knobs into the SDK's own type, which is what the
 // session setters validate. The conversion is the boundary where "the phone sent
 // nothing" stays nil instead of becoming a zero.
-func toSDK(g mobiletransport.GenerationSettings) provider.GenerationSettings {
+func toSDK(g gateway.GenerationSettings) provider.GenerationSettings {
 	return provider.GenerationSettings{
 		ThinkingLevel:    provider.ThinkingLevel(strings.TrimSpace(g.ThinkingLevel)),
 		Temperature:      g.Temperature,
@@ -375,8 +375,8 @@ func toSDK(g mobiletransport.GenerationSettings) provider.GenerationSettings {
 
 // fromSDK converts back, so the phone is told exactly what is stored rather than
 // what it last sent.
-func fromSDK(g provider.GenerationSettings) mobiletransport.GenerationSettings {
-	return mobiletransport.GenerationSettings{
+func fromSDK(g provider.GenerationSettings) gateway.GenerationSettings {
+	return gateway.GenerationSettings{
 		ThinkingLevel:    string(g.ThinkingLevel),
 		Temperature:      g.Temperature,
 		TopP:             g.TopP,
@@ -395,7 +395,7 @@ func fromSDK(g provider.GenerationSettings) mobiletransport.GenerationSettings {
 func (m modelStore) applySessionGeneration(
 	ctx context.Context,
 	sessionID string,
-	g mobiletransport.GenerationSettings,
+	g gateway.GenerationSettings,
 	clear bool,
 	clearKnobs []string,
 ) error {
@@ -403,7 +403,7 @@ func (m modelStore) applySessionGeneration(
 		return errors.New("runtime: session manager is not available")
 	}
 	if clear {
-		clearKnobs = append(clearKnobs, mobiletransport.MergeKnobNames()...)
+		clearKnobs = append(clearKnobs, gateway.MergeKnobNames()...)
 	}
 	path, err := m.sessions.ApplyGeneration(ctx, sessionID, toSDK(g), clear, clearKnobs)
 	if err != nil {
@@ -422,7 +422,7 @@ func (m modelStore) applySessionGeneration(
 // session's main pin alive when the phone saves sub-agent settings; the router
 // fills in the missing half of a half-specified route and rejects a route that
 // cannot run. A request with no main fields at all leaves the pin untouched.
-func sessionRouteChange(choice mobiletransport.ModelChoice, router *provider.Router) (bool, provider.ProviderID, string, error) {
+func sessionRouteChange(choice gateway.ModelChoice, router *provider.Router) (bool, provider.ProviderID, string, error) {
 	providerLocal := provider.ProviderID(choice.Provider)
 	model := choice.Model
 	if providerLocal == "" && model == "" {
@@ -451,15 +451,15 @@ func sessionRouteChange(choice mobiletransport.ModelChoice, router *provider.Rou
 	return true, providerLocal, model, nil
 }
 
-func (m modelStore) sessionRow(ctx context.Context, sessionID string) (mobiletransport.SessionRow, error) {
+func (m modelStore) sessionRow(ctx context.Context, sessionID string) (gateway.SessionRow, error) {
 	row, found, err := m.client.GetSession(ctx, sessionID)
 	if err != nil {
-		return mobiletransport.SessionRow{}, err
+		return gateway.SessionRow{}, err
 	}
 	if !found {
-		return mobiletransport.SessionRow{ID: sessionID}, nil
+		return gateway.SessionRow{ID: sessionID}, nil
 	}
-	return mobiletransport.SessionRow{
+	return gateway.SessionRow{
 		ID: row.ID, Title: row.Title, Provider: row.Provider, Model: row.Model,
 		SubProvider: row.SubProvider, SubModel: row.SubModel, SubEnabled: row.SubEnabled,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
@@ -497,16 +497,16 @@ func applySessionModel(session *session.Session, providerLocal provider.Provider
 
 // historyStore narrows the D1 client to what the phone's history endpoints
 // need, so the transport never sees the raw state table.
-type historyStore struct{ client *d1store.Client }
+type historyStore struct{ client *state.Client }
 
-func (h historyStore) ListSessions(ctx context.Context, limit int) ([]mobiletransport.SessionRow, error) {
+func (h historyStore) ListSessions(ctx context.Context, limit int) ([]gateway.SessionRow, error) {
 	rows, err := h.client.ListSessions(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]mobiletransport.SessionRow, 0, len(rows))
+	out := make([]gateway.SessionRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, mobiletransport.SessionRow{
+		out = append(out, gateway.SessionRow{
 			ID: row.ID, Title: row.Title, Provider: row.Provider, Model: row.Model,
 			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		})
@@ -514,32 +514,32 @@ func (h historyStore) ListSessions(ctx context.Context, limit int) ([]mobiletran
 	return out, nil
 }
 
-func (h historyStore) CreateSession(ctx context.Context, id, title, model string) (mobiletransport.SessionRow, error) {
+func (h historyStore) CreateSession(ctx context.Context, id, title, model string) (gateway.SessionRow, error) {
 	row, err := h.client.CreateSession(ctx, id, title, model)
 	if err != nil {
-		return mobiletransport.SessionRow{}, err
+		return gateway.SessionRow{}, err
 	}
-	return mobiletransport.SessionRow{ID: row.ID, Title: row.Title, Provider: row.Provider, Model: row.Model,
+	return gateway.SessionRow{ID: row.ID, Title: row.Title, Provider: row.Provider, Model: row.Model,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
 }
 
-func (h historyStore) RenameSession(ctx context.Context, id, title string) (mobiletransport.SessionRow, bool, error) {
+func (h historyStore) RenameSession(ctx context.Context, id, title string) (gateway.SessionRow, bool, error) {
 	row, found, err := h.client.RenameSession(ctx, id, title)
-	return mobiletransport.SessionRow{ID: row.ID, Title: row.Title}, found, err
+	return gateway.SessionRow{ID: row.ID, Title: row.Title}, found, err
 }
 
 func (h historyStore) DeleteSession(ctx context.Context, id string) (bool, error) {
 	return h.client.DeleteSession(ctx, id)
 }
 
-func (h historyStore) Turns(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]mobiletransport.TurnRow, error) {
+func (h historyStore) Turns(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]gateway.TurnRow, error) {
 	rows, err := h.client.Turns(ctx, sessionID, beforeSeq, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]mobiletransport.TurnRow, 0, len(rows))
+	out := make([]gateway.TurnRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, mobiletransport.TurnRow{
+		out = append(out, gateway.TurnRow{
 			Seq: row.Seq, Role: row.Role, Agent: row.Agent, JobID: row.JobID,
 			Text: row.Text, CreatedAt: row.CreatedAt, Model: row.Model,
 			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
@@ -554,29 +554,29 @@ func (h historyStore) AppendTurn(ctx context.Context, sessionID, role, agent, jo
 	return h.client.AppendTurnAt(ctx, sessionID, role, agent, jobID, text)
 }
 
-func (h historyStore) Node(ctx context.Context) (mobiletransport.NodeRow, bool, error) {
+func (h historyStore) Node(ctx context.Context) (gateway.NodeRow, bool, error) {
 	node, found, err := h.client.Node(ctx)
-	return mobiletransport.NodeRow{TunnelURL: node.TunnelURL, Version: node.Version, Heartbeat: node.Heartbeat}, found, err
+	return gateway.NodeRow{TunnelURL: node.TunnelURL, Version: node.Version, Heartbeat: node.Heartbeat}, found, err
 }
 
 // d1storeVerifier adapts the D1 client to the transport's Verifier contract:
 // a wrong credential is ErrTokenRejected (counted), anything else is a
 // transport problem (503, not counted).
-type d1storeVerifier struct{ client *d1store.Client }
+type d1storeVerifier struct{ client *state.Client }
 
 func (v d1storeVerifier) VerifyToken(ctx context.Context, token string) error {
 	err := v.client.VerifyToken(ctx, token)
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, d1store.ErrTokenRejected):
-		return mobiletransport.ErrTokenRejected
+	case errors.Is(err, state.ErrTokenRejected):
+		return gateway.ErrTokenRejected
 	default:
 		return err
 	}
 }
 
-// Hydrate implements mobiletransport.Hydrator: it runs once, after the first
+// Hydrate implements gateway.Hydrator: it runs once, after the first
 // phone hands over a verified token, so a daemon that started with an empty
 // state directory still comes up with the operator's config and sessions.
 func (m *mobileRuntime) Hydrate(ctx context.Context) error {
@@ -594,7 +594,7 @@ func (m *mobileRuntime) Hydrate(ctx context.Context) error {
 		log.Printf("mobile: prepare sessions for per-session sub-agent settings: %v", err)
 	}
 	if m.cfg.syncConfig {
-		report, err := m.client.HydrateConfig(ctx, d1store.DefaultConfigFiles(m.stateRoot))
+		report, err := m.client.HydrateConfig(ctx, state.DefaultConfigFiles(m.stateRoot))
 		if err != nil {
 			return err
 		}
@@ -629,7 +629,7 @@ func (m *mobileRuntime) PushState(ctx context.Context) {
 		return
 	}
 	if m.cfg.syncConfig {
-		report, err := m.client.PushConfig(ctx, d1store.DefaultConfigFiles(m.stateRoot))
+		report, err := m.client.PushConfig(ctx, state.DefaultConfigFiles(m.stateRoot))
 		if err != nil {
 			log.Printf("mobile: push config to D1: %v", err)
 		} else if len(report.PushedConfig) > 0 {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/runtime"
+	"github.com/Tulipskun/ai-engine/provider/registry"
 	"log"
 	"os"
 	"os/signal"
@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Tulipskun/ai-engine/agent"
 	"github.com/Tulipskun/ai-engine/io"
-	"github.com/Tulipskun/ai-engine/sdk"
 	"github.com/Tulipskun/ai-engine/session"
 )
 
@@ -85,12 +85,12 @@ func run(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Join(state, "data"), 0o755); err != nil {
 		return err
 	}
-	providerConfigPath := filepath.Join(state, runtime.DefaultProviderConfigPath)
-	providerFile, err := runtime.LoadProviderFile(providerConfigPath)
+	providerConfigPath := filepath.Join(state, registry.DefaultProviderConfigPath)
+	providerFile, err := registry.LoadProviderFile(providerConfigPath)
 	if err != nil {
 		return err
 	}
-	rt, err := runtime.Load(providerConfigPath)
+	rt, err := registry.Load(providerConfigPath)
 	if err != nil {
 		return err
 	}
@@ -104,11 +104,11 @@ func run(ctx context.Context) error {
 		providerID = string(rt.ProviderConfigs[0].ID)
 	}
 	modelID := strings.TrimSpace(os.Getenv("AI_MODEL"))
-	systemConfig, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath))
+	systemConfig, err := agent.LoadSystemConfig(filepath.Join(state, agent.DefaultSystemConfigPath))
 	if err != nil {
 		return err
 	}
-	// The boot session carries the main agent's generation settings. Without this
+	// The boot session carries the main ag's generation settings. Without this
 	// the settings lived in the config file but nothing ever copied them onto a
 	// session, so a hand-edited config changed nothing (CHANGE-077).
 	baseSession := provider.SessionConfig{
@@ -129,7 +129,7 @@ func run(ctx context.Context) error {
 	}
 	sessions := session.NewSessionManagerWithProviders(sessionDB, baseSession, rt.ProviderConfigs)
 	defer sessions.Close()
-	providerManager := runtime.NewProviderManager(providerConfigPath, rt, providerFile)
+	providerManager := registry.NewProviderManager(providerConfigPath, rt, providerFile)
 	inputConfigPath := filepath.Join(state, io.DefaultConfigPath)
 	transportConfig, err := io.LoadConfig(inputConfigPath)
 	if err != nil {
@@ -142,7 +142,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	agent, err := newAgentWithWorkspaces(rt.Client, workspace, state, systemConfig, func(ctx context.Context) string {
+	ag, err := newAgentWithWorkspaces(rt.Client, workspace, state, systemConfig, func(ctx context.Context) string {
 		return sessions.WorkspaceFor(session.SessionIDFromContext(ctx))
 	}, sessions)
 	if err != nil {
@@ -152,8 +152,8 @@ func run(ctx context.Context) error {
 	for _, providerLocal := range rt.ProviderConfigs {
 		providerKeys[providerLocal.ID] = providerLocal.Keys
 	}
-	var sources []sdk.InputSource
-	var displays []sdk.Display
+	var sources []io.InputSource
+	var displays []io.Display
 	// Mobile transport (REQ-046/REQ-047): the daemon's only gateway. It is
 	// reachable exclusively through the Cloudflare quick tunnel, authenticated
 	// with the Cloudflare token a phone presents, and it hydrates runtime state
@@ -185,10 +185,10 @@ func run(ctx context.Context) error {
 	models := modelStore{router: rt.Router, client: mobileRT.client, sessions: sessions}
 	mobileRT.sessions = sessions
 	mobileRT.transport.SetModelStore(models)
-	// The phone owns provider keys and which model each agent runs on. The admin
+	// The phone owns provider keys and which model each ag runs on. The admin
 	// store writes config/provider and config/system, which is what the daemon
 	// hydrates from, so a restart keeps the choices.
-	admin := newAdminStore(state, mobileRT.client, providerManager, &providerFile, sessions, agent,
+	admin := newAdminStore(state, mobileRT.client, providerManager, &providerFile, sessions, ag,
 		provider.SessionConfig{Provider: provider.ProviderID(providerID), Model: modelID})
 	// The catalogue's default model is the one a health check actually got an
 	// answer from, so the phone does not hand the user a model the key refuses.
@@ -212,32 +212,32 @@ func run(ctx context.Context) error {
 	}
 	// io is the input/output boundary: the transport feeds it inbound events and
 	// it publishes canonical output back, mirroring both directions into D1.
-	io := newMobileIO(mobileRT)
-	mobileRT.transport.SetInputMirror(io.MirrorInput)
+	bridge := newMobileIO(mobileRT)
+	mobileRT.transport.SetInputMirror(bridge.MirrorInput)
 	sources = append(sources, mobileRT.transport)
-	displays = append(displays, io)
+	displays = append(displays, bridge)
 	log.Printf("ai daemon ready: mobile gateway on %s (tunnel=%v d1=%s)",
 		transportConfig.Mobile.Listen, transportConfig.Mobile.Tunnel, transportConfig.Mobile.D1Database)
 	if len(sources) == 0 {
 		return fmt.Errorf("no transports enabled; configure config/entry.json")
 	}
-	var loop *sdk.HarnessLoop
-	inputs, err := sdk.MergeInputSources(ctx, sources...)
+	var loop *agent.HarnessLoop
+	inputs, err := io.MergeInputSources(ctx, sources...)
 	if err != nil {
 		return err
 	}
-	loop = &sdk.HarnessLoop{Agent: agent, Source: sdk.ChannelInputSource{Inputs: inputs}, ResolveSession: func(_ context.Context, in sdk.Input) (*session.Session, error) {
+	loop = &agent.HarnessLoop{Agent: ag, Source: io.ChannelInputSource{Inputs: inputs}, ResolveSession: func(_ context.Context, in io.Input) (*session.Session, error) {
 		return sessions.Resolve(context.Background(), in.SessionID)
-	}, BuildRequest: func(context.Context, sdk.Input, *session.Session) (provider.Request, error) {
+	}, BuildRequest: func(context.Context, io.Input, *session.Session) (provider.Request, error) {
 		// Stream every turn: the phone renders deltas as they arrive, and a
 		// provider that cannot stream still answers through the same path.
 		return provider.Request{
-			SystemPrompt:    systemPrompt(agent),
+			SystemPrompt:    systemPrompt(ag),
 			Instructions:    instructionFiles(),
 			MaxOutputTokens: maxOutputTokens,
 			Stream:          true,
 		}, nil
-	}, Displays: displays, DisplayTimeout: 10 * time.Second, OnTurnError: func(input sdk.Input, err error) {
+	}, Displays: displays, DisplayTimeout: 10 * time.Second, OnTurnError: func(input io.Input, err error) {
 		if errors.Is(err, context.Canceled) {
 			log.Printf("turn stopped by the phone source=%s session=%s", input.Source, input.SessionID)
 			return
@@ -245,7 +245,7 @@ func run(ctx context.Context) error {
 		log.Printf("turn failed source=%s session=%s: %v", input.Source, input.SessionID, err)
 		mobileRT.transport.ReportTurnError(input.SessionID, turnErrorMessage(err))
 	}, ApplySessionConfig: func(sessionID string) {
-		// Per-session sub-agent override wins for this turn only (ACP session
+		// Per-session sub-ag override wins for this turn only (ACP session
 		// config pattern): resolve the session pin, else fall back to the
 		// global agent defaults the admin store already loaded.
 		cfg, err := models.ResolveAgentConfig(context.Background(), sessionID)
@@ -253,17 +253,17 @@ func run(ctx context.Context) error {
 			log.Printf("mobile: resolve agent config for %s: %v", sessionID, err)
 			return
 		}
-		agent.SubAgentConfig.Provider = cfg.SubProvider
-		agent.SubAgentConfig.Model = cfg.SubModel
-		agent.SubAgentConfig.Enabled = cfg.SubEnabled
+		ag.SubAgentConfig.Provider = cfg.SubProvider
+		ag.SubAgentConfig.Model = cfg.SubModel
+		ag.SubAgentConfig.Enabled = cfg.SubEnabled
 	}}
 	mobileRT.transport.SetCancel(func(sessionID string) bool { return loop.CancelTurn(sessionID) })
-	// The phone's per-row stop: one sub agent stops without ending the turn that
+	// The phone's per-row stop: one sub-agent stops without ending the turn that
 	// delegated to it (REQ-048(11)).
-	mobileRT.transport.SetCancelSubAgent(agent.StopSubAgent)
+	mobileRT.transport.SetCancelSubAgent(ag.StopSubAgent)
 	// A stopped worker never reaches a terminal trace, so the phone learns about
-	// it from the sub agent's final report instead (REQ-048(11)).
-	agent.SetSubAgentSinks(func(event sdk.SubAgentEvent) {
+	// it from the sub-agent's final report instead (REQ-048(11)).
+	ag.SetSubAgentSinks(func(event agent.SubAgentEvent) {
 		if event.Kind == "final" && event.Parent != nil {
 			mobileRT.transport.SubAgentTerminal(event.Parent.ID(), event.JobID, event.Status)
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/runtime"
 	"github.com/Tulipskun/ai-engine/session"
 	"log"
 	"os"
@@ -12,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/agent"
 	"github.com/Tulipskun/ai-engine/tools"
 )
 
@@ -22,8 +21,8 @@ import (
 // main.go is the entry point; none of this belongs there.
 
 // newAgentWithWorkspaces builds the Agent with its worker tool registry and the
-// per-session workspace lookup, then applies the stored sub-agent defaults.
-func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg runtime.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*sdk.Agent, error) {
+// per-session workspace lookup, then applies the stored sub-ag defaults.
+func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg agent.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*agent.Agent, error) {
 	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
@@ -31,8 +30,8 @@ func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state stri
 	if workspaceFor != nil {
 		registry.SetWorkspaceResolver(workspaceFor)
 	}
-	agent := &sdk.Agent{Client: client, Tools: registry, Sessions: sessions}
-	agent.SubAgentConfig = sdk.SubAgentConfig{
+	ag := &agent.Agent{Client: client, Tools: registry, Sessions: sessions}
+	ag.SubAgentConfig = agent.SubAgentConfig{
 		Enabled:              cfg.SubAgent.Enabled,
 		Provider:             cfg.SubAgent.Provider,
 		Model:                cfg.SubAgent.Model,
@@ -44,20 +43,20 @@ func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state stri
 		ReportEveryToolCalls: cfg.SubAgent.ReportEveryToolCalls,
 	}
 	// Leave an empty worker prompt to the SDK so CLI and SDK defaults stay aligned.
-	return agent, nil
+	return ag, nil
 }
 
-func systemPrompt(agent *sdk.Agent) string {
+func systemPrompt(ag *agent.Agent) string {
 	base := ""
 	if value := strings.TrimSpace(os.Getenv("AI_SYSTEM_PROMPT")); value != "" {
 		base = value
 	} else if state, err := stateRoot(); err == nil {
-		if cfg, err := runtime.LoadSystemConfig(filepath.Join(state, runtime.DefaultSystemConfigPath)); err == nil {
+		if cfg, err := agent.LoadSystemConfig(filepath.Join(state, agent.DefaultSystemConfigPath)); err == nil {
 			base = cfg.SystemPrompt
 		}
 	}
 	if base == "" {
-		base = defaultSystemPrompt(agent)
+		base = defaultSystemPrompt(ag)
 	}
 	return base
 }
@@ -103,9 +102,9 @@ func instructionFiles() []provider.Instruction {
 	return out
 }
 
-func defaultSystemPrompt(agent *sdk.Agent) string {
+func defaultSystemPrompt(ag *agent.Agent) string {
 	var b strings.Builder
-	b.WriteString("You are the Main Agent: the senior engineer, not a courier. Think in this context: analyze the goal, read code and context yourself with your one read tool (read index.md first - it is the map of the project - then read only the files it names; you cannot list, search or run anything), make the design calls, and break the work into minimal ordered steps. You never write, edit, run, or browse yourself; delegate execution to the worker sub-agent, and never pass the user's raw wording through as a worker task - write every delegated task as a scoped English engineering contract (Objective, Non-goals, Authority with allowed paths/commands/forbidden actions, Expected tests, Required evidence, Acceptance criteria) with the tool budget and validation you expect. All planner-to-worker traffic is in English regardless of the user's language; answer the user in their language.\n")
+	b.WriteString("You are the Main Agent: the senior engineer, not a courier. Think in this context: analyze the goal, read code and context yourself with your one read tool (read index.md first - it is the map of the project - then read only the files it names; you cannot list, search or run anything), make the design calls, and break the work into minimal ordered steps. You never write, edit, run, or browse yourself; delegate execution to the worker sub-ag, and never pass the user's raw wording through as a worker task - write every delegated task as a scoped English engineering contract (Objective, Non-goals, Authority with allowed paths/commands/forbidden actions, Expected tests, Required evidence, Acceptance criteria) with the tool budget and validation you expect. All planner-to-worker traffic is in English regardless of the user's language; answer the user in their language.\n")
 	b.WriteString("Stay strictly within the user's requested goal and scope. Do not start unrelated improvements, features, cleanup, or investigations.\n")
 	b.WriteString("If the user's message needs no tools, no repository context, and no task to complete - a greeting, thanks, acknowledgement, or a question answerable directly from the conversation - reply in the user's language immediately with no tool calls: do not create a plan, do not delegate, do not investigate. Planning and delegation start only when there is real work to do.\n")
 	b.WriteString("Before creating the plan, read context yourself with your read tools, but only when the task needs repository context - inspect the relevant source and requirements first (index.md is the map, then read the files it names), then use what you learned to write a precise contract. For a trivial task that needs no repository context, skip that investigation and make a minimal one-step plan. Keep every plan to the fewest steps that cover the goal. You have no write, exec, list or search tools - a bash call is rejected; the worker does the hands-on work.\n")

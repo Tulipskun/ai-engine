@@ -1432,3 +1432,16 @@ New: ทุกรายการข้างต้นถูกลบ ยกเ�
 Impact: provider/types.go, provider/validate.go, provider/anthropic, provider/gemini, session/manager.go, session/settings.go, sdk/agent.go, sdk/subagent.go, sdk/trace.go, tools/command.go; ย้าย `transport/config.go` เป็น `io/entry_config.go` (เหลือเฉพาะ loader ที่ main ใช้); ลบไฟล์ `sdk/subagent_trace_sink.go`; ไม่เปลี่ยนพฤติกรรม — เทสต์เดิมผ่านทั้งหมดและ `staticcheck -checks=U1000 ./...` ไม่พบรายการเหลือ
 Validation: `go build ./...`; `go vet ./...`; `go test ./... -timeout 2m`; `gofmt -l .` ว่าง; `staticcheck -checks=U1000 ./...` = 0
 Status: accepted
+
+CHANGE-104
+
+Date: 2026-10-04
+Type: revise
+Request: ออกแบบโครงสร้าง package ใหม่ทั้ง repo ให้สะท้อนว่าแต่ละส่วนทำอะไร แล้วย้ายของเดิมที่ยังใช้ได้เข้าไป
+Conflict: none (ไม่เปลี่ยนพฤติกรรม เปลี่ยนเฉพาะที่อยู่ของโค้ด; REQ-004/REQ-016/REQ-019/REQ-029/REQ-046/REQ-047 ยังคงบังคับเหมือนเดิม)
+Previous: โครงสร้างเป็น `sdk/` (24 ไฟล์ 5,511 บรรทัด รวม session+provider+io+turn loop ไว้ใน package เดียว), `runtime/` (config + session manager + provider manager + D1), `transport/` (canonical io + WS gateway), `tools/`, `cmd/ai-engine/`
+New: แบนที่ root ตามคำถามที่แต่ละส่วนตอบ — `provider/` (ศัพท์กลาง Router, RouterClient, KeyPool, capabilities, bounds + adapter 4 ตัวใน `provider/<adapter>/` + `provider/registry/` ที่ผูก config กับ adapter), `session/` (ตัดสินว่าข้อความไป session ไหน — ทั้ง chat ของมือถือและ worker ใช้กลไกเดียวกัน), `tools/` (read + bash ที่ยังอยู่เพราะ agent ต้องไม่ลงมือกับโลกโดยตรง), `io/` (canonical Input/Output/Display/trace + `io/gateway/` WS/tunnel/auth/REST + `io/state/` D1), `agent/` (turn loop, planner, delegation, loop-control, system config), `cmd/ai-engine/` (main.go ประกอบและเปิด socket/tunnel เท่านั้น)
+Reason: เมื่อชื่อ package ไม่ตรงกับสิ่งที่มันทำ การหาโค้ดที่ต้องแก้ต้องไล่ทั้ง repo และไม่มีใครบอกได้ว่าอะไรอยู่ตรงไหน
+Impact: ย้ายไฟล์ทั้งหมดของ sdk/, runtime/, transport/ ไปยัง package ใหม่; `provider` ประกาศ interface `Session` ที่มันใช้เองแทนการ import `session`; `session.BoundJob` ตัด dependency session↔delegation; `Agent.DisablePlanning` ถูกลบเพราะซ้ำกับ `SessionConfig.AgentMode` (CHANGE-103); adapter registration อยู่ใน `provider/registry/` เพราะ `provider` ห้าม import adapter ของตัวเอง (จะเป็น cycle); ทิศ dependency เป็นทางเดียว `cmd → agent → {session,io,tools} → provider`; `staticcheck -checks=U1000 ./...` = 0
+Validation: `go build ./...`; `go vet ./...`; `go test ./... -timeout 2m`; `gofmt -l .` ว่าง; `go list -deps ./cmd/ai-engine` ยืนยันทิศ dependency ไม่มี cycle
+Status: accepted

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tulipskun/ai-engine/provider"
-	"github.com/Tulipskun/ai-engine/runtime"
+	"github.com/Tulipskun/ai-engine/provider/registry"
 	"log"
 	"path/filepath"
 	"sort"
@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tulipskun/ai-engine/runtime/d1store"
-	"github.com/Tulipskun/ai-engine/sdk"
+	"github.com/Tulipskun/ai-engine/agent"
+	"github.com/Tulipskun/ai-engine/io/gateway"
+	"github.com/Tulipskun/ai-engine/io/state"
 	"github.com/Tulipskun/ai-engine/session"
-	mobiletransport "github.com/Tulipskun/ai-engine/transport/mobile"
 )
 
 // adminStore is the phone's write surface for provider configuration and agent
@@ -49,22 +49,22 @@ type adminStore struct {
 	systemPath   string
 	stateRoot    string
 
-	manager *runtime.ProviderManager
+	manager *registry.ProviderManager
 	// providerConfig is the daemon's in-memory copy of the provider file, kept
 	// in step with disk and D1 by saveProvidersLocked.
-	providerConfig *runtime.ProviderFileConfig
-	client         *d1store.Client
+	providerConfig *registry.ProviderFileConfig
+	client         *state.Client
 
 	sessions *session.SessionManager
-	agent    *sdk.Agent
+	agent    *agent.Agent
 
 	// mainRoute is the daemon's boot default, used when the system config leaves
 	// the main provider or model empty.
 	mainRoute provider.SessionConfig
 }
 
-func newAdminStore(stateRoot string, client *d1store.Client, manager *runtime.ProviderManager,
-	providerConfig *runtime.ProviderFileConfig, sessions *session.SessionManager, agent *sdk.Agent,
+func newAdminStore(stateRoot string, client *state.Client, manager *registry.ProviderManager,
+	providerConfig *registry.ProviderFileConfig, sessions *session.SessionManager, agent *agent.Agent,
 	mainRoute provider.SessionConfig) *adminStore {
 	return &adminStore{
 		providerPath:   filepath.Join(stateRoot, "config", "provider.json"),
@@ -203,12 +203,12 @@ func (a *adminStore) wasProbed(id string) bool {
 	return a.probed[id]
 }
 
-func (a *adminStore) Providers(context.Context) ([]mobiletransport.ProviderStatus, error) {
-	file, err := runtime.LoadProviderFile(a.providerPath)
+func (a *adminStore) Providers(context.Context) ([]gateway.ProviderStatus, error) {
+	file, err := registry.LoadProviderFile(a.providerPath)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]mobiletransport.ProviderStatus, 0, len(file.Providers))
+	out := make([]gateway.ProviderStatus, 0, len(file.Providers))
 	for _, p := range file.Providers {
 		out = append(out, a.statusOf(p, a.manager))
 	}
@@ -216,8 +216,8 @@ func (a *adminStore) Providers(context.Context) ([]mobiletransport.ProviderStatu
 	return out, nil
 }
 
-func (a *adminStore) statusOf(p runtime.ProviderFile, manager *runtime.ProviderManager) mobiletransport.ProviderStatus {
-	view := mobiletransport.ProviderStatus{
+func (a *adminStore) statusOf(p registry.ProviderFile, manager *registry.ProviderManager) gateway.ProviderStatus {
+	view := gateway.ProviderStatus{
 		ID: p.Name, Adapter: p.Adapter, Endpoint: p.HTTPEndpoint,
 		FreeOnly: p.FreeOnly, KeyCount: len(p.APIKeys), LastError: a.lastError(p.Name),
 		Probed: a.wasProbed(p.Name), WorkingModel: a.WorkingModel(provider.ProviderID(p.Name)),
@@ -231,20 +231,20 @@ func (a *adminStore) statusOf(p runtime.ProviderFile, manager *runtime.ProviderM
 	return view
 }
 
-func (a *adminStore) AddProvider(ctx context.Context, spec mobiletransport.ProviderSpec) (mobiletransport.ProviderStatus, error) {
+func (a *adminStore) AddProvider(ctx context.Context, spec gateway.ProviderSpec) (gateway.ProviderStatus, error) {
 	name := strings.TrimSpace(spec.ID)
 	if name == "" {
-		return mobiletransport.ProviderStatus{}, errors.New("ต้องตั้งชื่อ provider")
+		return gateway.ProviderStatus{}, errors.New("ต้องตั้งชื่อ provider")
 	}
 	adapter := strings.ToLower(strings.TrimSpace(spec.Adapter))
 	switch provider.AdapterID(adapter) {
 	case provider.AdapterOpenAI, provider.AdapterAnthropic, provider.AdapterGemini, provider.AdapterOpenCode:
 	default:
-		return mobiletransport.ProviderStatus{}, fmt.Errorf("adapter %q ไม่รู้จัก (ใช้ openai, anthropic, gemini หรือ opencode)", spec.Adapter)
+		return gateway.ProviderStatus{}, fmt.Errorf("adapter %q ไม่รู้จัก (ใช้ openai, anthropic, gemini หรือ opencode)", spec.Adapter)
 	}
 	endpoint := strings.TrimRight(strings.TrimSpace(spec.Endpoint), "/")
 	if !strings.HasPrefix(endpoint, "https://") {
-		return mobiletransport.ProviderStatus{}, errors.New("endpoint ต้องเป็น https://")
+		return gateway.ProviderStatus{}, errors.New("endpoint ต้องเป็น https://")
 	}
 	keys := make([]string, 0, len(spec.Keys))
 	for _, k := range spec.Keys {
@@ -253,40 +253,40 @@ func (a *adminStore) AddProvider(ctx context.Context, spec mobiletransport.Provi
 		}
 	}
 	if len(keys) == 0 {
-		return mobiletransport.ProviderStatus{}, errors.New("ต้องใส่ API key อย่างน้อยหนึ่งตัว")
+		return gateway.ProviderStatus{}, errors.New("ต้องใส่ API key อย่างน้อยหนึ่งตัว")
 	}
 
-	entry := runtime.ProviderFile{
+	entry := registry.ProviderFile{
 		Name: name, Adapter: adapter, HTTPEndpoint: endpoint,
 		APIKeys: keys, FreeOnly: spec.FreeOnly,
 	}
 	a.fileMu.Lock()
-	file, err := runtime.LoadProviderFile(a.providerPath)
+	file, err := registry.LoadProviderFile(a.providerPath)
 	if err != nil {
 		a.fileMu.Unlock()
-		return mobiletransport.ProviderStatus{}, err
+		return gateway.ProviderStatus{}, err
 	}
 	for _, p := range file.Providers {
 		if strings.EqualFold(p.Name, name) {
 			a.fileMu.Unlock()
-			return mobiletransport.ProviderStatus{}, fmt.Errorf("มี provider %q อยู่แล้ว", name)
+			return gateway.ProviderStatus{}, fmt.Errorf("มี provider %q อยู่แล้ว", name)
 		}
 	}
 	file.Providers = append(file.Providers, entry)
 	err = a.saveProvidersLocked(ctx, file)
 	a.fileMu.Unlock()
 	if err != nil {
-		return mobiletransport.ProviderStatus{}, err
+		return gateway.ProviderStatus{}, err
 	}
 	return a.statusOf(entry, a.manager), nil
 }
 
-func (a *adminStore) UpdateKeys(ctx context.Context, id string, change mobiletransport.KeyChange) (mobiletransport.ProviderStatus, error) {
+func (a *adminStore) UpdateKeys(ctx context.Context, id string, change gateway.KeyChange) (gateway.ProviderStatus, error) {
 	a.fileMu.Lock()
-	file, err := runtime.LoadProviderFile(a.providerPath)
+	file, err := registry.LoadProviderFile(a.providerPath)
 	if err != nil {
 		a.fileMu.Unlock()
-		return mobiletransport.ProviderStatus{}, err
+		return gateway.ProviderStatus{}, err
 	}
 	index := -1
 	for i, p := range file.Providers {
@@ -297,7 +297,7 @@ func (a *adminStore) UpdateKeys(ctx context.Context, id string, change mobiletra
 	}
 	if index < 0 {
 		a.fileMu.Unlock()
-		return mobiletransport.ProviderStatus{}, fmt.Errorf("ไม่พบ provider %q", id)
+		return gateway.ProviderStatus{}, fmt.Errorf("ไม่พบ provider %q", id)
 	}
 	entry := file.Providers[index]
 	switch {
@@ -310,7 +310,7 @@ func (a *adminStore) UpdateKeys(ctx context.Context, id string, change mobiletra
 		}
 		if len(keys) == 0 {
 			a.fileMu.Unlock()
-			return mobiletransport.ProviderStatus{}, errors.New("key pool ใหม่ว่างเปล่า")
+			return gateway.ProviderStatus{}, errors.New("key pool ใหม่ว่างเปล่า")
 		}
 		entry.APIKeys = keys
 	case change.Add != nil:
@@ -323,7 +323,7 @@ func (a *adminStore) UpdateKeys(ctx context.Context, id string, change mobiletra
 		}
 		if added == 0 {
 			a.fileMu.Unlock()
-			return mobiletransport.ProviderStatus{}, errors.New("ไม่มี key ใหม่")
+			return gateway.ProviderStatus{}, errors.New("ไม่มี key ใหม่")
 		}
 	case change.Remove != nil:
 		drop := map[int]bool{}
@@ -340,19 +340,19 @@ func (a *adminStore) UpdateKeys(ctx context.Context, id string, change mobiletra
 		}
 		if len(kept) == 0 {
 			a.fileMu.Unlock()
-			return mobiletransport.ProviderStatus{}, errors.New("ต้องเหลือ key อย่างน้อยหนึ่งตัว")
+			return gateway.ProviderStatus{}, errors.New("ต้องเหลือ key อย่างน้อยหนึ่งตัว")
 		}
 		entry.APIKeys = kept
 	default:
 		a.fileMu.Unlock()
-		return mobiletransport.ProviderStatus{}, errors.New("ระบุ add, remove หรือ replace")
+		return gateway.ProviderStatus{}, errors.New("ระบุ add, remove หรือ replace")
 	}
 	file.Providers[index] = entry
 	a.forgetStatus(entry.Name)
 	err = a.saveProvidersLocked(ctx, file)
 	a.fileMu.Unlock()
 	if err != nil {
-		return mobiletransport.ProviderStatus{}, err
+		return gateway.ProviderStatus{}, err
 	}
 	return a.statusOf(entry, a.manager), nil
 }
@@ -360,11 +360,11 @@ func (a *adminStore) UpdateKeys(ctx context.Context, id string, change mobiletra
 func (a *adminStore) RemoveProvider(ctx context.Context, id string) error {
 	a.fileMu.Lock()
 	defer a.fileMu.Unlock()
-	file, err := runtime.LoadProviderFile(a.providerPath)
+	file, err := registry.LoadProviderFile(a.providerPath)
 	if err != nil {
 		return err
 	}
-	kept := make([]runtime.ProviderFile, 0, len(file.Providers))
+	kept := make([]registry.ProviderFile, 0, len(file.Providers))
 	for _, p := range file.Providers {
 		if strings.EqualFold(p.Name, id) {
 			continue
@@ -387,7 +387,7 @@ func (a *adminStore) RemoveProvider(ctx context.Context, id string) error {
 // The checks run a few at a time under a per-provider budget. One slow gateway
 // must not hold the whole answer past the time the phone (and the tunnel in
 // front of it) will wait, and the phone asked about all of them at once.
-func (a *adminStore) RefreshProviders(ctx context.Context) ([]mobiletransport.ProviderStatus, error) {
+func (a *adminStore) RefreshProviders(ctx context.Context) ([]gateway.ProviderStatus, error) {
 	if a.manager == nil {
 		return nil, errors.New("runtime: provider manager is not available")
 	}
@@ -436,13 +436,13 @@ func (a *adminStore) check(ctx context.Context, config provider.ProviderConfig) 
 
 // RefreshProvider re-runs discovery and the one-token probe for a single provider,
 // so the phone does not have to wait for every other provider to answer.
-func (a *adminStore) RefreshProvider(ctx context.Context, id string) (mobiletransport.ProviderStatus, error) {
+func (a *adminStore) RefreshProvider(ctx context.Context, id string) (gateway.ProviderStatus, error) {
 	if a.manager == nil {
-		return mobiletransport.ProviderStatus{}, errors.New("runtime: provider manager is not available")
+		return gateway.ProviderStatus{}, errors.New("runtime: provider manager is not available")
 	}
 	configs, err := a.manager.Reload(ctx)
 	if err != nil {
-		return mobiletransport.ProviderStatus{}, err
+		return gateway.ProviderStatus{}, err
 	}
 	var found *provider.ProviderConfig
 	for i := range configs {
@@ -452,19 +452,19 @@ func (a *adminStore) RefreshProvider(ctx context.Context, id string) (mobiletran
 		}
 	}
 	if found == nil {
-		return mobiletransport.ProviderStatus{}, fmt.Errorf("ไม่พบ provider %q", id)
+		return gateway.ProviderStatus{}, fmt.Errorf("ไม่พบ provider %q", id)
 	}
 	a.check(ctx, *found)
 	list, err := a.Providers(ctx)
 	if err != nil {
-		return mobiletransport.ProviderStatus{}, err
+		return gateway.ProviderStatus{}, err
 	}
 	for _, p := range list {
 		if strings.EqualFold(p.ID, id) {
 			return p, nil
 		}
 	}
-	return mobiletransport.ProviderStatus{ID: id, Probed: true}, nil
+	return gateway.ProviderStatus{ID: id, Probed: true}, nil
 }
 
 // probe asks for the smallest possible answer, so a dead key, an exhausted quota
@@ -578,12 +578,12 @@ func refusalMessage(err error) (error, bool) {
 
 // saveProvidersLocked writes the file, syncs it to D1, and rebuilds the live
 // routers so the change takes effect without a restart. The caller holds a.mu.
-func (a *adminStore) saveProvidersLocked(ctx context.Context, file runtime.ProviderFileConfig) error {
+func (a *adminStore) saveProvidersLocked(ctx context.Context, file registry.ProviderFileConfig) error {
 	raw, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := runtime.SaveProviderFile(a.providerPath, file); err != nil {
+	if err := registry.SaveProviderFile(a.providerPath, file); err != nil {
 		return err
 	}
 	if a.client != nil {
@@ -616,15 +616,15 @@ func (a *adminStore) saveProvidersLocked(ctx context.Context, file runtime.Provi
 }
 
 // systemGenerationToWire converts the main agent's stored knobs for the phone.
-func systemGenerationToWire(g provider.GenerationSettings) mobiletransport.GenerationSettings {
+func systemGenerationToWire(g provider.GenerationSettings) gateway.GenerationSettings {
 	return fromSDK(g)
 }
 
 // subGenerationToWire converts the worker agent's stored knobs for the phone.
 // The worker config carries its own temperature, thinking level and output cap,
 // which are the subset of the knob set that applies to a delegated turn.
-func subGenerationToWire(sub sdk.SubAgentConfig) mobiletransport.GenerationSettings {
-	out := mobiletransport.GenerationSettings{
+func subGenerationToWire(sub agent.SubAgentConfig) gateway.GenerationSettings {
+	out := gateway.GenerationSettings{
 		ThinkingLevel:   string(sub.ThinkingLevel),
 		Temperature:     sub.Temperature,
 		MaxOutputTokens: sub.MaxOutputTokens,
@@ -632,17 +632,17 @@ func subGenerationToWire(sub sdk.SubAgentConfig) mobiletransport.GenerationSetti
 	return out
 }
 
-func (a *adminStore) Settings(context.Context) (mobiletransport.SettingsView, error) {
-	cfg, err := runtime.LoadSystemConfig(a.systemPath)
+func (a *adminStore) Settings(context.Context) (gateway.SettingsView, error) {
+	cfg, err := agent.LoadSystemConfig(a.systemPath)
 	if err != nil {
-		return mobiletransport.SettingsView{}, err
+		return gateway.SettingsView{}, err
 	}
-	view := mobiletransport.SettingsView{
-		Main: mobiletransport.AgentSettings{
+	view := gateway.SettingsView{
+		Main: gateway.AgentSettings{
 			Provider: cfg.Provider, Model: cfg.Model,
 			Generation: systemGenerationToWire(cfg.Settings()),
 		},
-		Sub: mobiletransport.AgentSettings{
+		Sub: gateway.AgentSettings{
 			Provider: cfg.SubAgent.Provider, Model: cfg.SubAgent.Model,
 			Generation: subGenerationToWire(cfg.SubAgent),
 		},
@@ -660,19 +660,19 @@ func (a *adminStore) Settings(context.Context) (mobiletransport.SettingsView, er
 	return view, nil
 }
 
-func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.SettingsView) (mobiletransport.SettingsView, error) {
+func (a *adminStore) SaveSettings(ctx context.Context, settings gateway.SettingsView) (gateway.SettingsView, error) {
 	if err := a.validateRoute(settings.Main); err != nil {
-		return mobiletransport.SettingsView{}, fmt.Errorf("main agent: %w", err)
+		return gateway.SettingsView{}, fmt.Errorf("main agent: %w", err)
 	}
 	if err := a.validateRoute(settings.Sub); err != nil && strings.TrimSpace(settings.Sub.Model) != "" {
-		return mobiletransport.SettingsView{}, fmt.Errorf("sub agent: %w", err)
+		return gateway.SettingsView{}, fmt.Errorf("sub agent: %w", err)
 	}
 
 	a.fileMu.Lock()
 	defer a.fileMu.Unlock()
-	cfg, err := runtime.LoadSystemConfig(a.systemPath)
+	cfg, err := agent.LoadSystemConfig(a.systemPath)
 	if err != nil {
-		return mobiletransport.SettingsView{}, err
+		return gateway.SettingsView{}, err
 	}
 	cfg.Provider = strings.TrimSpace(settings.Main.Provider)
 	cfg.Model = strings.TrimSpace(settings.Main.Model)
@@ -682,7 +682,7 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	// generation block, and replacing would erase a temperature somebody set by
 	// hand in this file or in the D1 copy of it, without a word (CHANGE-077).
 	mainKnobs := settings.Main.Generation.Merge(
-		mobiletransport.GenerationSettings{
+		gateway.GenerationSettings{
 			ThinkingLevel:    string(cfg.Settings().ThinkingLevel),
 			Temperature:      cfg.Settings().Temperature,
 			TopP:             cfg.Settings().TopP,
@@ -698,7 +698,7 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	cfg.Generation = toSDK(mainKnobs)
 	cfg.MaxOutputTokens = mainKnobs.MaxOutputTokens
 	subKnobs := settings.Sub.Generation.Merge(
-		mobiletransport.GenerationSettings{
+		gateway.GenerationSettings{
 			ThinkingLevel:   string(cfg.SubAgent.ThinkingLevel),
 			Temperature:     cfg.SubAgent.Temperature,
 			MaxOutputTokens: cfg.SubAgent.MaxOutputTokens,
@@ -718,26 +718,26 @@ func (a *adminStore) SaveSettings(ctx context.Context, settings mobiletransport.
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return mobiletransport.SettingsView{}, err
+		return gateway.SettingsView{}, err
 	}
-	// One writer for this file: runtime.SaveSystemConfig owns the mkdir/chmod/
+	// One writer for this file: agent.SaveSystemConfig owns the mkdir/chmod/
 	// write path, so the file cannot drift between the phone's save and the
 	// config loader's idea of its permissions (CHANGE-099).
-	if err := runtime.SaveSystemConfig(a.systemPath, cfg); err != nil {
-		return mobiletransport.SettingsView{}, err
+	if err := agent.SaveSystemConfig(a.systemPath, cfg); err != nil {
+		return gateway.SettingsView{}, err
 	}
 	if a.client != nil {
 		if err := a.client.Put(ctx, "config:system", string(raw)); err != nil {
-			return mobiletransport.SettingsView{}, err
+			return gateway.SettingsView{}, err
 		}
 	}
 	a.applySettings(cfg)
-	return mobiletransport.SettingsView{
-		Main: mobiletransport.AgentSettings{
+	return gateway.SettingsView{
+		Main: gateway.AgentSettings{
 			Provider: cfg.Provider, Model: cfg.Model,
 			Generation: systemGenerationToWire(cfg.Settings()),
 		},
-		Sub: mobiletransport.AgentSettings{
+		Sub: gateway.AgentSettings{
 			Provider: cfg.SubAgent.Provider, Model: cfg.SubAgent.Model,
 			Generation: subGenerationToWire(cfg.SubAgent),
 		},
@@ -754,7 +754,7 @@ func (a *adminStore) RefreshRoutesFromDisk() {
 	}
 	a.fileMu.Lock()
 	defer a.fileMu.Unlock()
-	cfg, err := runtime.LoadSystemConfig(a.systemPath)
+	cfg, err := agent.LoadSystemConfig(a.systemPath)
 	if err != nil {
 		log.Printf("admin: reroute from stored settings: %v", err)
 		return
@@ -766,7 +766,7 @@ func (a *adminStore) RefreshRoutesFromDisk() {
 // applySettings pushes the saved routes into the live runtime: the sub agent
 // takes its provider/model, and the session manager learns the main default for
 // chats that have never picked one.
-func (a *adminStore) applySettings(cfg runtime.SystemConfig) {
+func (a *adminStore) applySettings(cfg agent.SystemConfig) {
 	if a.agent != nil {
 		if cfg.SubAgent.Provider != "" {
 			a.agent.SubAgentConfig.Provider = cfg.SubAgent.Provider
@@ -795,7 +795,7 @@ func (a *adminStore) applySettings(cfg runtime.SystemConfig) {
 
 // mainRouteFrom is the session config a stored system config implies, knobs
 // included, so the boot default and a live reload describe the same thing.
-func mainRouteFrom(cfg runtime.SystemConfig) provider.SessionConfig {
+func mainRouteFrom(cfg agent.SystemConfig) provider.SessionConfig {
 	g := cfg.Settings()
 	if g.MaxOutputTokens == 0 {
 		g.MaxOutputTokens = cfg.MaxOutputTokensFor()
@@ -821,7 +821,7 @@ func (a *adminStore) defaultRoute() provider.SessionConfig {
 
 // validateRoute rejects a pair the router cannot serve, so the phone learns
 // immediately instead of on the next turn.
-func (a *adminStore) validateRoute(route mobiletransport.AgentSettings) error {
+func (a *adminStore) validateRoute(route gateway.AgentSettings) error {
 	providerLocal := provider.ProviderID(strings.TrimSpace(route.Provider))
 	model := strings.TrimSpace(route.Model)
 	if providerLocal == "" || model == "" {
