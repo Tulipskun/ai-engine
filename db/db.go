@@ -48,7 +48,7 @@ type queryRequest struct {
 	Params []string `json:"params,omitempty"`
 }
 
-type queryResult struct {
+type d1QueryResult struct {
 	Success bool        `json:"success"`
 	Errors  []apiError `json:"errors"`
 }
@@ -170,12 +170,22 @@ func queryBatch(queries []queryRequest) error {
 	}
 	defer resp.Body.Close()
 
-	var result queryResult
+	var result apiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
 		return apiErrorMessage("D1 query", resp.StatusCode, result.Errors)
+	}
+
+	var results []d1QueryResult
+	if err := json.Unmarshal(result.Result, &results); err != nil {
+		return fmt.Errorf("db: decode D1 query result: %w", err)
+	}
+	for _, query := range results {
+		if !query.Success {
+			return apiErrorMessage("D1 query", resp.StatusCode, query.Errors)
+		}
 	}
 	return nil
 }
