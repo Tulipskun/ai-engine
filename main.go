@@ -54,8 +54,8 @@ func main() {
 		}
 	}
 
-	if err := db.Insert(ctx, cfToken, accountID, databaseID, "tunnel", []string{"url"}, []string{publicURL}); err != nil {
-		log.Fatalf("insert tunnel URL: %v", err)
+	if err := db.SetTunnelURL(ctx, cfToken, accountID, databaseID, publicURL); err != nil {
+		log.Fatalf("set tunnel URL: %v", err)
 	}
 
 	log.Printf("tunnel: %s", publicURL)
