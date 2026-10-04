@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"ai-engine/db"
@@ -67,12 +69,39 @@ func GetProvider(id string) (Provider, bool) {
 
 func providerFromRow(row map[string]any) (Provider, error) {
 	return Provider{
-		ID:     stringValue(row["id"]),
-		Name:   stringValue(row["name"]),
-		APIURL: stringValue(row["api_url"]),
-		APIKey: stringValue(row["api_key"]),
-		Model:  stringValue(row["model"]),
+		ID:     intString(row["index"]),
+		Name:   stringValue(row["provider"]),
+		APIURL: stringValue(row["endpoint"]),
+		APIKey: firstKey(row["keys"]),
+		Model:  "",
 	}, nil
+}
+
+// intString renders a D1 number (decoded as float64) without a decimal
+// point, so index 0 reads "0" and not "0e+00" or similar.
+func intString(value any) string {
+	switch value := value.(type) {
+	case float64:
+		return fmt.Sprint(int(value))
+	case int:
+		return fmt.Sprint(value)
+	default:
+		return stringValue(value)
+	}
+}
+
+// firstKey takes the first API key out of the keys column, which stores a
+// JSON array of the real keys. Every provider here holds exactly one key.
+func firstKey(value any) string {
+	raw, ok := value.(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return stringValue(value)
+	}
+	var keys []string
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil || len(keys) == 0 {
+		return raw
+	}
+	return keys[0]
 }
 
 func stringValue(value any) string {
