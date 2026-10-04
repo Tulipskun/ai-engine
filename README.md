@@ -24,8 +24,8 @@ ai-engine
 ## Run
 
 ```bash
-go build -o ai ./cmd/ai-engine
-./ai          # or: ./ai daemon
+go build -o ai .
+./ai
 ```
 
 There is no CLI, no Discord bot and no self-update any more (CHANGE-059): the
@@ -93,4 +93,4 @@ token is never written to a file.
 ## CI
 
 `.github/workflows/go.yml` builds, tests and vets on every push;
-`release.yml` produces the Linux arm64 binary as an artifact (no release tags).
+`release.yml` publishes the latest tested Linux amd64/arm64 binaries as a GitHub Release.

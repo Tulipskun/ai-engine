@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"ai-engine/db"
-	"ai-engine/io/gateway"
+	"github.com/Tulipskun/ai-engine/db"
+	"github.com/Tulipskun/ai-engine/io/gateway"
 )
 
 func main() {
