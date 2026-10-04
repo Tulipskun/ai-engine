@@ -1,32 +1,29 @@
 package db
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 )
 
-type verifyRequest struct {
-	Token string `json:"token"`
+const verifyEndpoint = "https://api.cloudflare.com/client/v4/user/tokens/verify"
+
+type tokenVerifyResponse struct {
+	Success bool
+	Result  struct {
+		ID     string
+		Status string
+	}
 }
 
-type verifyResponse struct {
-	Valid bool `json:"valid"`
-}
-
-func VerifyToken(ctx context.Context, endpoint, token string) (bool, error) {
-	body, err := json.Marshal(verifyRequest{Token: token})
+func VerifyToken(ctx context.Context, token string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, verifyEndpoint, nil)
 	if err != nil {
 		return false, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return false, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -34,14 +31,14 @@ func VerifyToken(ctx context.Context, endpoint, token string) (bool, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, fmt.Errorf("verify endpoint returned HTTP %d", resp.StatusCode)
-	}
-
-	var result verifyResponse
+	var result tokenVerifyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false, err
 	}
 
-	return result.Valid, nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("cloudflare token verification returned HTTP %d", resp.StatusCode)
+	}
+
+	return result.Success && result.Result.Status == "active", nil
 }
