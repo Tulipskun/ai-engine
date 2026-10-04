@@ -79,7 +79,6 @@ func providerFromRow(row map[string]any) (Provider, error) {
 	}, nil
 }
 
-// boolValue reads a D1 0/1 (decoded as float64) as a bool.
 func boolValue(value any) bool {
 	switch value := value.(type) {
 	case float64:
@@ -96,8 +95,6 @@ func boolValue(value any) bool {
 	}
 }
 
-// intString renders a D1 number (decoded as float64) without a decimal
-// point, so index 0 reads "0" and not "0e+00" or similar.
 func intString(value any) string {
 	switch value := value.(type) {
 	case float64:
@@ -109,8 +106,6 @@ func intString(value any) string {
 	}
 }
 
-// parseKeys reads the keys column, which stores every real key as a JSON
-// array, so key2/3 stay reachable instead of keeping only the first one.
 func parseKeys(value any) []string {
 	raw, ok := value.(string)
 	if !ok || strings.TrimSpace(raw) == "" {
