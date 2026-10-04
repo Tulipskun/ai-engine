@@ -2,11 +2,15 @@ package session
 
 import (
 	"ai-engine/provider"
+	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ---- from session/db.go ----
 type SessionDB struct {
 	mu   sync.Mutex
 	db   *sql.DB
@@ -685,4 +690,344 @@ func (s *SessionDB) Dir() string {
 		return ""
 	}
 	return filepath.Dir(s.path)
+}
+
+// ---- from session/list.go ----
+type SessionInfo struct {
+	ID        string
+	Provider  provider.ProviderID
+	Model     string
+	UpdatedAt time.Time
+	TurnCount int
+}
+
+// SessionDBPath returns the stable on-disk path for one session database.
+func SessionDBPath(dir, sessionID string) string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(sessionID))
+	return filepath.Join(dir, encoded+".db")
+}
+
+// ListSessionsInDir lists the sessions stored as one SQLite file per session.
+func ListSessionsInDir(dir string, limit int) ([]SessionInfo, error) {
+	if dir == "" {
+		return nil, errors.New("sdk: session directory is required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]SessionInfo, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".db" {
+			continue
+		}
+		db, err := OpenSessionDB(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		items, err := db.ListSessions(1)
+		_ = db.Close()
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		out = append(out, items[0])
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *SessionDB) ListSessions(limit int) ([]SessionInfo, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+		SELECT s.id, s.provider, s.model, s.updated_at,
+		       (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id)
+		FROM sessions s
+		ORDER BY s.updated_at DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionInfo
+	for rows.Next() {
+		var item SessionInfo
+		var updated string
+		if err := rows.Scan(&item.ID, &item.Provider, &item.Model, &updated, &item.TurnCount); err != nil {
+			return nil, err
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, updated); err == nil {
+			item.UpdatedAt = parsed
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ---- from session/settings.go ----
+// Settings setters write the session's own top-level fields. Each Discord
+// channel owns two sessions (main and sub) with their own settings, so no
+// setter needs to know about agent modes (REQ-030, CHANGE-021).
+
+func (s *Session) SetAgentMode(mode provider.AgentMode) error {
+	if s == nil {
+		return errors.New("sdk: session is nil")
+	}
+	switch mode {
+	case provider.AgentModeMain, provider.AgentModeSub:
+		return s.updateConfig(func(config *provider.SessionConfig) error { config.AgentMode = mode; return nil })
+	default:
+		return fmt.Errorf("sdk: invalid agent mode %q", mode)
+	}
+}
+
+// SetWorkspace pins the session's working directory. Empty clears it back to
+// the process default. Values must be absolute; existence checks belong to the
+// transport that received the user command (REQ-038).
+func (s *Session) SetWorkspace(path string) error {
+	if s == nil {
+		return errors.New("sdk: session is nil")
+	}
+	path = strings.TrimSpace(path)
+	if path != "" && !strings.HasPrefix(path, "/") && !strings.Contains(path, ":\\") && !strings.Contains(path, ":/") {
+		return fmt.Errorf("sdk: workspace must be absolute: %q", path)
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.Workspace = path; return nil })
+}
+
+func (s *Session) SetKeyPool(keys *provider.KeyPool) error {
+	if s == nil {
+		return errors.New("sdk: session is nil")
+	}
+	if keys == nil {
+		return errors.New("sdk: provider has no key pool")
+	}
+	if _, err := keys.At(0); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.keys = keys
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Session) SetProvider(providerLocal provider.ProviderID, keys *provider.KeyPool) error {
+	providerLocal = provider.ProviderID(strings.TrimSpace(string(providerLocal)))
+	if providerLocal == "" {
+		return errors.New("sdk: provider is required")
+	}
+	if keys == nil {
+		return errors.New("sdk: provider has no key pool")
+	}
+	if _, err := keys.At(0); err != nil {
+		return err
+	}
+	if err := s.SetKeyPool(keys); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error {
+		config.Provider = providerLocal
+		config.Model = ""
+		config.KeyIndex = 0
+		return nil
+	})
+}
+func (s *Session) SetModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return errors.New("sdk: model is required")
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.Model = model; return nil })
+}
+func (s *Session) SetTemperature(temperature float64) error {
+	if err := provider.ValidateTemperature(temperature); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error {
+		config.Temperature = provider.CloneFloat(&temperature)
+		return nil
+	})
+}
+func (s *Session) ClearTemperature() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.Temperature = nil; return nil })
+}
+func (s *Session) SetThinkingLevel(level provider.ThinkingLevel) error {
+	if err := provider.ValidateThinkingLevel(level); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.ThinkingLevel = level; return nil })
+}
+func (s *Session) ClearThinkingLevel() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.ThinkingLevel = ""; return nil })
+}
+func (s *Session) SetKeyIndex(index int) error {
+	if index < 0 {
+		return errors.New("sdk: API key index out of range")
+	}
+	if s == nil {
+		return errors.New("sdk: session is nil")
+	}
+	s.mu.RLock()
+	keys := s.keys
+	s.mu.RUnlock()
+	if keys == nil {
+		return errors.New("sdk: session has no key pool")
+	}
+	if _, err := keys.At(index); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.KeyIndex = index; return nil })
+}
+
+// SetMaxOutputTokens caps how long an answer may run. Zero means no cap, which
+// leaves the limit to the provider's own default rather than inventing one.
+func (s *Session) SetMaxOutputTokens(tokens int) error {
+	if err := provider.ValidateMaxOutputTokens(tokens); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.MaxOutputTokens = tokens; return nil })
+}
+
+// Every setter below validates before it stores, because a knob that a provider
+// will reject is better refused here than turned into a failed turn later
+// (CHANGE-077).
+
+func (s *Session) SetTopP(v float64) error {
+	if err := provider.ValidateTopP(v); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.TopP = provider.CloneFloat(&v); return nil })
+}
+func (s *Session) ClearTopP() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.TopP = nil; return nil })
+}
+
+func (s *Session) SetTopK(v float64) error {
+	if err := provider.ValidateTopK(v); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.TopK = provider.CloneFloat(&v); return nil })
+}
+func (s *Session) ClearTopK() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.TopK = nil; return nil })
+}
+
+func (s *Session) SetStopSequences(seq []string) error {
+	cleaned := make([]string, 0, len(seq))
+	for _, entry := range seq {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			cleaned = append(cleaned, entry)
+		}
+	}
+	if len(cleaned) == 0 {
+		return s.ClearStopSequences()
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.StopSequences = cleaned; return nil })
+}
+func (s *Session) ClearStopSequences() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.StopSequences = nil; return nil })
+}
+
+func (s *Session) SetPresencePenalty(v float64) error {
+	if err := provider.ValidatePenalty("presence_penalty", v); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error {
+		config.PresencePenalty = provider.CloneFloat(&v)
+		return nil
+	})
+}
+func (s *Session) ClearPresencePenalty() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.PresencePenalty = nil; return nil })
+}
+
+func (s *Session) SetFrequencyPenalty(v float64) error {
+	if err := provider.ValidatePenalty("frequency_penalty", v); err != nil {
+		return err
+	}
+	return s.updateConfig(func(config *provider.SessionConfig) error {
+		config.FrequencyPenalty = provider.CloneFloat(&v)
+		return nil
+	})
+}
+func (s *Session) ClearFrequencyPenalty() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.FrequencyPenalty = nil; return nil })
+}
+
+func (s *Session) SetSeed(seed int64) error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.Seed = provider.CloneInt64(&seed); return nil })
+}
+func (s *Session) ClearSeed() error {
+	return s.updateConfig(func(config *provider.SessionConfig) error { config.Seed = nil; return nil })
+}
+func (s *Session) updateConfig(update func(*provider.SessionConfig) error) error {
+	if s == nil {
+		return errors.New("sdk: session is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	config := s.config.Clone()
+	if err := update(&config); err != nil {
+		return err
+	}
+	if s.store != nil {
+		if err := s.store.SaveSession(config); err != nil {
+			return err
+		}
+	}
+	s.config = config
+	return nil
+}
+
+// ---- from session/context.go ----
+type sessionContextKey struct{}
+
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionContextKey{}, sessionID)
+}
+
+func SessionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(sessionContextKey{}).(string)
+	return value
+}
+
+type workspaceContextKey struct{}
+
+// WithWorkspace pins the working directory for tool executions derived from
+// ctx. Worker jobs stamp it from their parent session so per-channel
+// workspaces survive delegation (REQ-038).
+func WithWorkspace(ctx context.Context, workspace string) context.Context {
+	if workspace == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workspaceContextKey{}, workspace)
+}
+
+func WorkspaceFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(workspaceContextKey{}).(string)
+	return value
 }

@@ -53,18 +53,18 @@ their full paths.
 | Responsibility | Key files |
 |---|---|
 | Turn loop model → tool → model | `session/agent.go`, `harness.go` |
-| Loop-control caps (REQ-045) | `session/loop_control.go`, `session/loop_control_test.go` |
-| Planner (Main Agent, senior: read-only context tools) | `session/plan_tool.go`, `session/plan_tool_test.go` |
-| Worker delegation contracts, progress/final reports | `session/subagent.go`, `session/subagent_test.go` |
-| Context budget, newest-group truncation | `session/context_window.go` |
-| Session persistence (one db per session) | `session/db.go`, `session/settings.go` |
-| Provider routing, catalogue, retry | `provider/router.go`, `provider/client.go`, `provider/*/` |
-| Worker tool surface (read, bash) | `tools/registry.go` |
-| Read tool and workspace path discipline | `tools/files.go`, `tools/files_test.go` |
-| Shell tool | `tools/command.go` |
-| Runtime config load/save, session manager | `session/system_config.go`, `provider/registry/config.go`, `session/manager.go`, `provider/registry/config_test.go` |
-| Stateless runtime state ↔ Cloudflare D1 | `db/client.go` (`providers`/`tunnel`/`nodes`/`sessions`/`turns`/`state` tables, hydrate/push), `db/sync.go` |
-| Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (REST surface), `io/gateway/mobile.go` (runtime wiring + Attach), `io/gateway/display.go` (D1 mirror display), `io/gateway/admin_store.go` (provider keys + agent settings ที่มือถือจัดการ), `io/gateway/agent.go` (agent construction, prompts, workspace) |
+| Loop-control caps (REQ-045) | `session/agent.go`, `session/loop_control_test.go` |
+| Planner (Main Agent, senior: read-only context tools) | `session/delegate.go`, `session/plan_tool_test.go` |
+| Worker delegation contracts, progress/final reports | `session/delegate.go`, `session/subagent_test.go` |
+| Context budget, newest-group truncation | `session/agent.go` |
+| Session persistence (one db per session) | `session/store.go`, `session/session.go` |
+| Provider routing, catalogue, retry | `provider/router.go`, `provider/types.go`, `provider/*/` |
+| Worker tool surface (read, bash) | `tools/tools.go` |
+| Read tool and workspace path discipline | `tools/tools.go`, `tools/files_test.go` |
+| Shell tool | `tools/tools.go` |
+| Runtime config load/save, session manager | `session/store.go`, `provider/registry/registry.go`, `session/session.go`, `provider/registry/config_test.go` |
+| Stateless runtime state ↔ Cloudflare D1 | `db/db.go` (`providers`/`tunnel`/`nodes`/`sessions`/`turns`/`state` tables, hydrate/push, sync) |
+| Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/api.go` (REST ประวัติ+admin), `io/gateway/runtime.go` (wiring + mirror + admin + construction) |
 | Composition root: CF_TOKEN verify → assemble → harness loop → tunnel | `main.go` เท่านั้น (boot: verify token, providers จากตาราง D1, assemble ผ่าน `gateway.Attach`, รัน `session.HarnessLoop`) |
 
 ## Key files (what each owns)
@@ -85,12 +85,12 @@ their full paths.
   tools + `read`); the checklist is injected into the planner system prompt every
   iteration. `orchestrationTools` is the single list behind both Definitions and
   Execute, so an advertised tool can never be unroutable.
-- `session/context_window.go` — token budget (default 58000); keeps newest
+- `session/agent.go` — token budget (default 58000); keeps newest
   complete user→response→tools groups unsplit, drops oldest first.
 - `session/db.go` — one SQLite db per session under `data/sessions/`;
   persists settings, turns, and plan state across restarts, adding new
   generation columns to a database written before they existed.
-- `tools/registry.go` — worker `Registry`: registers the whole tool surface
+- `tools/tools.go` — worker `Registry`: registers the whole tool surface
   (`read`, `bash`), resolves per-session workspace root, dispatches `Execute`
   calls. CHANGE-087 retired every other tool.
 - `tools/files.go` — `read` plus the `safePath`/`withinRoot` discipline every
@@ -111,11 +111,11 @@ through `io/gateway/generation.go`.
 
 ## Start-here routes
 
-- Fix a turn-loop bug: `session/agent.go` + `session/harness.go` + `session/context_window.go`.
+- Fix a turn-loop bug: `session/agent.go` + `session/harness.go` + `session/agent.go`.
 - Change planner/worker behavior: `session/plan_tool.go` + `session/subagent.go`.
-- Add or change a worker tool: `tools/registry.go` + owning `tools/*.go`
+- Add or change a worker tool: `tools/tools.go` + owning `tools/*.go`
   file; keep the change in the owning module (no cross-module refactors).
-- Provider / catalogue / retry issue: `provider/client.go` +
+- Provider / catalogue / retry issue: `provider/types.go` +
   `provider/router.go` + `provider/<adapter>/`.
 - Daemon start / gateway / tunnel / D1 hydration: `main.go`
   (entry point: verify CF_TOKEN, providers จากตาราง D1, assemble
@@ -123,7 +123,7 @@ through `io/gateway/generation.go`.
   `db/`.
 - Inbound WS event or outbound frame / D1 mirroring: `io/gateway/display.go`.
 - Session persist / workspace / settings: `session/db.go` +
-  `session/settings.go` + `session/manager.go`.
+  `session/store.go` + `session/session.go`.
 - Config or state that must come from D1 instead of disk: `db/`
   keys `config:*` and `sessions/<id>` (CON-012).
 - Mobile app (AIxodia) gateway: `io/gateway/` ทั้งหมด (wiring อยู่ใน

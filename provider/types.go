@@ -2,9 +2,15 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"sync"
 	"time"
 )
 
+// ---- from provider/types.go ----
 type Role string
 
 const (
@@ -383,3 +389,212 @@ type ModelLister interface {
 	ListModels(context.Context, string) ([]Model, error)
 }
 type EndpointProvider interface{ WithBaseURL(string) Provider }
+
+// ---- from provider/keys.go ----
+type KeyPool struct {
+	mu      sync.Mutex
+	keys    []string
+	current int
+}
+
+func NewKeyPool(keys ...string) *KeyPool {
+	cleaned := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if k = strings.TrimSpace(k); k != "" {
+			cleaned = append(cleaned, k)
+		}
+	}
+	return &KeyPool{keys: cleaned}
+}
+func (p *KeyPool) Len() int                 { p.mu.Lock(); defer p.mu.Unlock(); return len(p.keys) }
+func (p *KeyPool) Current() (string, error) { return p.At(p.IndexOfCurrent()) }
+func (p *KeyPool) At(index int) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.keys) == 0 {
+		return "", errors.New("sdk: no API keys configured")
+	}
+	if index < 0 || index >= len(p.keys) {
+		return "", errors.New("sdk: API key index out of range")
+	}
+	return p.keys[index], nil
+}
+func (p *KeyPool) IndexOfCurrent() int { p.mu.Lock(); defer p.mu.Unlock(); return p.current }
+func (p *KeyPool) Rotate() (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.keys) == 0 {
+		return "", errors.New("sdk: no API keys configured")
+	}
+	p.current = (p.current + 1) % len(p.keys)
+	return p.keys[p.current], nil
+}
+
+// ---- from provider/capabilities.go ----
+// No provider publishes what a model accepts. There is no capability endpoint to
+// ask, so what is known has to be carried here, and the honest way to say so is
+// to start from what the adapter can express and narrow it per model family
+// (CHANGE-077, REQ-049(3)).
+//
+// Two rules cause most of the confusion and are encoded as such:
+//
+//   - A model that thinks before it answers takes only the default sampling
+//     parameters. Asking for a temperature, a top_p or either penalty is refused
+//     by OpenAI on chat/completions, and by Anthropic whenever extended thinking
+//     is enabled. So a reasoning family does not support temperature.
+//   - A model that cannot think does not support a reasoning level. Reporting it
+//     as capable is how a setting gets accepted here and then dropped there.
+
+// adapterKnobs is what each adapter's translation is able to express at all,
+// before any model is considered. It is here rather than in the four adapters so
+// there is one answer to compare against, and so a knob cannot be claimed by one
+// adapter and quietly missing from another.
+var adapterKnobs = map[AdapterID]Model{
+	AdapterOpenAI: {
+		SupportsTopP: true, SupportsStopSequences: true,
+		SupportsPresencePenalty: true, SupportsFrequencyPenalty: true, SupportsSeed: true,
+	},
+	AdapterOpenCode: {
+		SupportsTopP: true, SupportsStopSequences: true,
+		SupportsPresencePenalty: true, SupportsFrequencyPenalty: true, SupportsSeed: true,
+	},
+	AdapterAnthropic: {
+		SupportsTopP: true, SupportsTopK: true, SupportsStopSequences: true,
+	},
+	AdapterGemini: {
+		SupportsTopP: true, SupportsTopK: true, SupportsStopSequences: true,
+	},
+}
+
+// ModelCapabilities narrows what an adapter can express down to what one model
+// accepts. The base comes from the adapter, because an adapter is the honest
+// answer to "what can this integration say at all"; the rules below only remove
+// what this particular model would refuse.
+func ModelCapabilities(adapter AdapterID, base Model) Model {
+	baseline, ok := adapterKnobs[adapter]
+	if !ok {
+		baseline = adapterKnobs[AdapterOpenAI]
+	}
+	base.SupportsTopP = baseline.SupportsTopP
+	base.SupportsTopK = baseline.SupportsTopK
+	base.SupportsStopSequences = baseline.SupportsStopSequences
+	base.SupportsPresencePenalty = baseline.SupportsPresencePenalty
+	base.SupportsFrequencyPenalty = baseline.SupportsFrequencyPenalty
+	base.SupportsSeed = baseline.SupportsSeed
+
+	base.SupportsThinking = base.SupportsThinking || thinksByFamily(base.ID)
+	if base.SupportsThinking {
+		// Reasoning pins the sampling knobs, so a temperature is not one of the
+		// things this model can be told.
+		base.SupportsTemperature = false
+	}
+	base.SupportsTools = base.SupportsTools || base.SupportsThinking
+	return base
+}
+
+// thinksByFamily names the model families that expose a reasoning control.
+// Matching is on the part of the id before any date or size suffix, because
+// providers append those themselves: "gpt-5-2025-08-07" is still a gpt-5.
+func thinksByFamily(modelID string) bool {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if id == "" {
+		return false
+	}
+	for _, prefix := range []string{
+		"o1", "o3", "o4", // OpenAI reasoning families
+		"gpt-5", "gpt-oss", // and the current GPT line
+		"claude-3-7", "claude-4", // Anthropic extended thinking arrived at 3.7
+		"claude-opus-4", "claude-sonnet-4", "claude-haiku-4",
+		"gemini-2.5", // Gemini thinking budget
+		"deepseek-r1", "deepseek-reasoner", "qwq",
+	} {
+		if id == prefix || strings.HasPrefix(id, prefix+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- from provider/validate.go ----
+// The bounds a provider will accept, in one place. The session setters and the
+// config loader both go through here, so a value hand-edited into config is held
+// to the same rule as one that arrived over the wire, and the two cannot drift
+// apart (CHANGE-077).
+
+const (
+	MinTemperature = 0.0
+	MaxTemperature = 2.0
+
+	MinTopP = 0.0
+	MaxTopP = 1.0
+
+	MinTopK = 0.0
+	MaxTopK = 1.0
+
+	MinPenalty = -2.0
+	MaxPenalty = 2.0
+)
+
+// ValidateTemperature rejects a value outside the range, and rejects NaN and
+// Inf because both survive a range comparison and would reach the body as
+// something a provider cannot read.
+func ValidateTemperature(v float64) error {
+	return checkRange("temperature", v, MinTemperature, MaxTemperature)
+}
+
+// ValidateTopP rejects a nucleus value outside 0..1.
+func ValidateTopP(v float64) error { return checkRange("top_p", v, MinTopP, MaxTopP) }
+
+// ValidateTopK rejects a top-k outside 0..1.
+func ValidateTopK(v float64) error { return checkRange("top_k", v, MinTopK, MaxTopK) }
+
+// ValidatePenalty rejects a presence or frequency penalty outside -2..2.
+func ValidatePenalty(name string, v float64) error {
+	return checkRange(name, v, MinPenalty, MaxPenalty)
+}
+
+// ValidateMaxOutputTokens rejects a negative cap. Zero is allowed and means the
+// provider keeps its own limit.
+func ValidateMaxOutputTokens(v int) error {
+	if v < 0 {
+		return errors.New("sdk: max output tokens must not be negative")
+	}
+	return nil
+}
+
+// ValidateThinkingLevel rejects a level no provider is asked for.
+func ValidateThinkingLevel(level ThinkingLevel) error {
+	if !validThinkingLevel(level) {
+		return fmt.Errorf("sdk: invalid thinking level %q", level)
+	}
+	return nil
+}
+
+// checkRange rejects a value no provider would accept.
+func checkRange(name string, v, lo, hi float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return fmt.Errorf("sdk: %s must be a number", name)
+	}
+	if v < lo || v > hi {
+		return fmt.Errorf("sdk: %s must be between %g and %g, got %g", name, lo, hi, v)
+	}
+	return nil
+}
+
+func validThinkingLevel(level ThinkingLevel) bool {
+	switch level {
+	case ThinkingNone, ThinkingLow, ThinkingMedium, ThinkingHigh:
+		return true
+	default:
+		return false
+	}
+}
+
+// ---- from provider/reasoning.go ----
+// ReasoningState preserves provider-native thinking/reasoning data across an
+// agent tool loop. Providers that require their reasoning text to be echoed
+// back can use this field without exposing it as normal model content.
+type ReasoningState struct {
+	ID   string `json:"id,omitempty"`
+	Text string `json:"text,omitempty"`
+}
