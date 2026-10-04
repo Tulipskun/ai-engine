@@ -34,7 +34,6 @@ touching code; the tree is the map a worker has instead of a search tool.
 ├── io.go           mobileIO: WS frames ↔ canonical turns, D1 turn mirror
 ├── admin_store.go  provider keys + agent settings the phone writes
 ├── agent.go        agent construction, system prompts, workspace root
-├── skills/         contributor procedures
 ├── AGENTS.md       spec-first rule + module discipline
 ├── README.md       how to run the daemon
 └── index.md        this file
