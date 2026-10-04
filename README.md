@@ -4,6 +4,23 @@ The AI harness behind **AIxodia** (the Android client). `ai` is a single
 daemon whose only gateway is a WebSocket published through a Cloudflare quick
 tunnel; runtime configuration and session state live in Cloudflare D1 (REQ-047).
 
+## One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tulipskun/ai-engine/main/install.sh | bash
+```
+
+The installer detects Linux architecture, installs the latest tested `ai-engine`
+release and `cloudflared` into `/usr/local/bin` when writable, otherwise
+`~/.local/bin`. It does not store the Cloudflare token.
+
+Then run:
+
+```bash
+export CF_TOKEN='YOUR_CLOUDFLARE_API_TOKEN'
+ai-engine
+```
+
 ## Run
 
 ```bash
