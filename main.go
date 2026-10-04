@@ -9,7 +9,16 @@ import (
 
 	"github.com/Tulipskun/ai-engine/db"
 	"github.com/Tulipskun/ai-engine/io/gateway"
+	"github.com/Tulipskun/ai-engine/io/state"
 )
+
+type cfTokenVerifier struct {
+	client *state.Client
+}
+
+func (v cfTokenVerifier) VerifyToken(ctx context.Context, token string) error {
+	return v.client.VerifyToken(ctx, token)
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -38,26 +47,28 @@ func main() {
 		log.Fatalf("find D1 database: %v", err)
 	}
 
-	publicURL, stopTunnel, err := gateway.RunQuickTunnel(ctx, 8787, "cloudflared")
+	tokens := state.NewMemoryToken()
+	tokens.Adopt(cfToken)
+	d1 := state.NewClient(state.DefaultAPIBase, tokens.Get)
+	d1.SetDatabaseName("aixodia")
+
+	transport := gateway.New(gateway.Config{
+		Listen:      "127.0.0.1:8787",
+		Tunnel:      true,
+		Cloudflared: "cloudflared",
+		Tokens:      tokens,
+		Verifier:    cfTokenVerifier{client: d1},
+		Announce: func(ctx context.Context, publicURL string) error {
+			return db.SetTunnelURL(ctx, cfToken, accountID, databaseID, publicURL)
+		},
+	})
+
+	stopHTTP, err := transport.StartHTTP(ctx, "127.0.0.1:8787")
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer stopTunnel()
+	defer stopHTTP()
 
-	exists, err := db.TableExists(ctx, cfToken, accountID, databaseID, "tunnel")
-	if err != nil {
-		log.Fatalf("check tunnel table: %v", err)
-	}
-	if !exists {
-		if err := db.CreateTable(ctx, cfToken, accountID, databaseID, "tunnel", "url TEXT"); err != nil {
-			log.Fatalf("create tunnel table: %v", err)
-		}
-	}
-
-	if err := db.SetTunnelURL(ctx, cfToken, accountID, databaseID, publicURL); err != nil {
-		log.Fatalf("set tunnel URL: %v", err)
-	}
-
-	log.Printf("tunnel: %s", publicURL)
+	log.Printf("ai-engine: HTTP/WebSocket listening on 127.0.0.1:8787")
 	<-ctx.Done()
 }
