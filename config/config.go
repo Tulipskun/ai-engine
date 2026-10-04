@@ -14,7 +14,7 @@ type Provider struct {
 	ID      string
 	Name    string
 	APIURL  string
-	APIKey  string
+	Keys    []string
 	Adapter string
 	Free    bool
 }
@@ -73,7 +73,7 @@ func providerFromRow(row map[string]any) (Provider, error) {
 		ID:      intString(row["index"]),
 		Name:    stringValue(row["provider"]),
 		APIURL:  stringValue(row["endpoint"]),
-		APIKey:  firstKey(row["keys"]),
+		Keys:    parseKeys(row["keys"]),
 		Adapter: stringValue(row["adapter"]),
 		Free:    boolValue(row["free"]),
 	}, nil
@@ -109,18 +109,18 @@ func intString(value any) string {
 	}
 }
 
-// firstKey takes the first API key out of the keys column, which stores a
-// JSON array of the real keys. Every provider here holds exactly one key.
-func firstKey(value any) string {
+// parseKeys reads the keys column, which stores every real key as a JSON
+// array, so key2/3 stay reachable instead of keeping only the first one.
+func parseKeys(value any) []string {
 	raw, ok := value.(string)
 	if !ok || strings.TrimSpace(raw) == "" {
-		return stringValue(value)
+		return nil
 	}
 	var keys []string
-	if err := json.Unmarshal([]byte(raw), &keys); err != nil || len(keys) == 0 {
-		return raw
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+		return nil
 	}
-	return keys[0]
+	return keys
 }
 
 func stringValue(value any) string {
