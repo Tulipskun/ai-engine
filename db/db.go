@@ -215,6 +215,25 @@ func CreateTable(ctx context.Context, token, accountID, databaseID, table, colum
 	return Query(ctx, token, accountID, databaseID, sql)
 }
 
+func SetTunnelURL(ctx context.Context, token, accountID, databaseID, url string) error {
+	if strings.TrimSpace(url) == "" {
+		return fmt.Errorf("tunnel URL cannot be empty")
+	}
+
+	if _, err := query(ctx, token, accountID, databaseID, "DELETE FROM tunnel"); err != nil {
+		return err
+	}
+
+	return Query(
+		ctx,
+		token,
+		accountID,
+		databaseID,
+		"INSERT INTO tunnel (url) VALUES (?)",
+		url,
+	)
+}
+
 func Insert(ctx context.Context, token, accountID, databaseID, table string, columns []string, values []string) error {
 	if !identifierRE.MatchString(table) {
 		return fmt.Errorf("invalid table name: %s", table)
