@@ -11,6 +11,7 @@ import (
 )
 
 const verifyEndpoint = "https://api.cloudflare.com/client/v4/user/tokens/verify"
+const accountsEndpoint = "https://api.cloudflare.com/client/v4/accounts"
 
 var identifierRE = regexp.MustCompile("^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -20,6 +21,21 @@ type tokenVerifyResponse struct {
 		ID     string
 		Status string
 	}
+}
+
+type accountsResponse struct {
+	Success bool `json:"success"`
+	Result  []struct {
+		ID string `json:"id"`
+	} `json:"result"`
+}
+
+type databasesResponse struct {
+	Success bool `json:"success"`
+	Result  []struct {
+		UUID string `json:"uuid"`
+		Name string `json:"name"`
+	} `json:"result"`
 }
 
 type queryRequest struct {
@@ -58,6 +74,68 @@ func VerifyToken(ctx context.Context, token string) (bool, error) {
 	}
 
 	return result.Success && result.Result.Status == "active", nil
+}
+
+func FindAccountID(ctx context.Context, token string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, accountsEndpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result accountsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
+		return "", fmt.Errorf("cloudflare accounts lookup failed: HTTP %d", resp.StatusCode)
+	}
+	if len(result.Result) == 0 {
+		return "", fmt.Errorf("no Cloudflare account found")
+	}
+	if len(result.Result) > 1 {
+		return "", fmt.Errorf("multiple Cloudflare accounts found")
+	}
+
+	return result.Result[0].ID, nil
+}
+
+func FindDatabaseID(ctx context.Context, token, accountID, databaseName string) (string, error) {
+	endpoint := fmt.Sprintf("%s/%s/d1/database", accountsEndpoint, accountID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result databasesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
+		return "", fmt.Errorf("cloudflare D1 database lookup failed: HTTP %d", resp.StatusCode)
+	}
+
+	for _, database := range result.Result {
+		if database.Name == databaseName {
+			return database.UUID, nil
+		}
+	}
+
+	return "", fmt.Errorf("D1 database %q not found", databaseName)
 }
 
 func Query(ctx context.Context, token, accountID, databaseID, sql string, params ...string) error {
