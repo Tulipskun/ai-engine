@@ -173,12 +173,10 @@ type ProviderID string
 type AdapterID string
 
 const (
-	ProviderOpenRouter ProviderID = "openrouter"
-	ProviderOpenCode   ProviderID = "opencode"
-	AdapterOpenAI      AdapterID  = "openai"
-	AdapterAnthropic   AdapterID  = "anthropic"
-	AdapterGemini      AdapterID  = "gemini"
-	AdapterOpenCode    AdapterID  = "opencode"
+	AdapterOpenAI    AdapterID = "openai"
+	AdapterAnthropic AdapterID = "anthropic"
+	AdapterGemini    AdapterID = "gemini"
+	AdapterOpenCode  AdapterID = "opencode"
 )
 
 type Model struct {

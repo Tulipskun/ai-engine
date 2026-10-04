@@ -1,11 +1,10 @@
-package transport
+package io
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // MobileConfig points the daemon at the local listener a Cloudflare quick tunnel
@@ -49,21 +48,4 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("transport: decode entry config %q: %w", path, err)
 	}
 	return config, nil
-}
-
-func SaveConfig(path string, config Config) error {
-	if path == "" {
-		path = DefaultConfigPath
-	}
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("transport: encode entry config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("transport: create config directory: %w", err)
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("transport: write entry config %q: %w", path, err)
-	}
-	return nil
 }

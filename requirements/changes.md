@@ -1420,3 +1420,15 @@ Reason: ผู้ใช้สั่งลบ ประกอบกับต้�
 Impact: ลบ `cmd/ai-engine/project_requirements.go`, `sdk/project_requirements.go`, `cmd/ai-engine/mobile_display.go` (ย้ายเข้า `io.go`), จุดเรียกใน `sdk/subagent.go`; เพิ่ม `cmd/ai-engine/io.go`, `cmd/ai-engine/agent.go`, `Transport.SetInputMirror` ใน `transport/mobile/gateway.go`; `main.go` และ `mobile.go` เล็กลง; ลบ `newAgent`, `envOr`, `systemPromptSource` ที่ไม่มี caller; อัปเดต `index.md`; ไม่เปลี่ยน canonical Turn/ContentPart contract, session database layout, provider wire format, transport protocol, D1 sync semantics หรือ CON-012 เรื่อง credential — `requirements/` ยังคงอยู่ใน repository และยังเป็น source of truth
 Validation: `go build ./...`; `go vet ./...`; `go test ./... -timeout 2m`; `gofmt -l .` ว่าง; ยืนยันว่าฟังก์ชันที่ย้ายทั้ง 7 ตรงกับต้นฉบับทุกบรรทัด (ต่างเฉพาะส่วน `projectRequirements` ที่ตั้งใจลบ) และไม่มีฟังก์ชันใดหายไปจาก `main.go`
 Status: accepted
+
+CHANGE-103
+
+Date: 2026-10-04
+Type: remove
+Request: ลบสิ่งที่ประกาศไว้แต่ไม่มีใครเรียก และตัดกลไกที่ซ้ำซ้อนออก
+Conflict: none (REQ-029 ระบุว่า session จำ agent mode ได้; การรวม `DisablePlanning` เข้ากับ `AgentMode` ทำให้ข้อกำหนดเดียวครอบคลุมทั้ง main และ sub โดยยังคงพฤติกรรมเดิม)
+Previous: มีโค้ดที่ไม่มี caller — `provider.ProviderOpenRouter`/`ProviderOpenCode`, `session.NewSessionManager`, `transport.SaveConfig`, `sdk.ResponseText`, `tools.hasShellSyntax`/`parsePositiveInt`/`runCommandArgs`, `sdk.withText`, `anthropic.max`, `gemini.parse`, `subAgentManager.runningJobID`, `validThinkingLevel` (สำเนาที่ซ้ำกับ provider), `sdk/subagent_trace_sink.go` (ไฟล์ 19 บรรทัดที่มี setter เดียว), และ `Agent.DisablePlanning` ซึ่งทำหน้าที่ซ้ำกับ `SessionConfig.AgentMode`
+New: ทุกรายการข้างต้นถูกลบ ยกเว้นของที่ยังมี caller จริง (`KeyPool.Rotate` เป็น primitive ที่ `Session.RotateAPIKey` เรียก, `d1store.encodeBlob`/`decodeBlob` ถูกเรียกทั้งคู่); `DisablePlanning` ถูกลบและ worker session ตั้ง `AgentMode = sub` แทน ทำให้ "เป็น planner หรือ worker" มีที่ตัดสินใจเดียว; `sdk/subagent_trace_sink.go` รวมเข้า `sdk/subagent.go`
+Impact: provider/types.go, provider/validate.go, provider/anthropic, provider/gemini, session/manager.go, session/settings.go, sdk/agent.go, sdk/subagent.go, sdk/trace.go, tools/command.go; ย้าย `transport/config.go` เป็น `io/entry_config.go` (เหลือเฉพาะ loader ที่ main ใช้); ลบไฟล์ `sdk/subagent_trace_sink.go`; ไม่เปลี่ยนพฤติกรรม — เทสต์เดิมผ่านทั้งหมดและ `staticcheck -checks=U1000 ./...` ไม่พบรายการเหลือ
+Validation: `go build ./...`; `go vet ./...`; `go test ./... -timeout 2m`; `gofmt -l .` ว่าง; `staticcheck -checks=U1000 ./...` = 0
+Status: accepted

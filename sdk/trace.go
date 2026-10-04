@@ -3,7 +3,6 @@ package sdk
 import (
 	"context"
 	"github.com/Tulipskun/ai-engine/provider"
-	"strings"
 	"time"
 )
 
@@ -94,14 +93,4 @@ func TraceMessage(event TraceEvent) string {
 	default:
 		return ""
 	}
-}
-
-func ResponseText(resp provider.Response) string {
-	var b strings.Builder
-	for _, part := range resp.Content {
-		if part.Type == provider.ContentText {
-			b.WriteString(part.Text)
-		}
-	}
-	return b.String()
 }

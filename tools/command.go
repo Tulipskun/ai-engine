@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -17,12 +16,6 @@ const maxCommandOutputBytes = 1 << 20
 type commandOutput struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exit_code"`
-}
-
-type runCommandArgs struct {
-	Command   string   `json:"command"`
-	Args      []string `json:"args"`
-	TimeoutMS int      `json:"timeout_ms"`
 }
 
 type bashArgs struct {
@@ -111,26 +104,3 @@ func (b *limitedCommandBuffer) Write(p []byte) (int, error) {
 }
 
 func (b *limitedCommandBuffer) String() string { return strings.TrimSpace(string(b.data)) }
-
-// hasShellSyntax reports whether a bare command line relies on shell
-// features (chains, pipes, redirects, expansions). Such lines run
-// through the system shell; anything else executes directly.
-func hasShellSyntax(line string) bool {
-	if strings.Contains(line, "\n") {
-		return true
-	}
-	for _, op := range []string{"&&", "||", "|", ";", ">", "<", "$", "`", "*", "?"} {
-		if strings.Contains(line, op) {
-			return true
-		}
-	}
-	return false
-}
-
-func parsePositiveInt(value string, fallback int) int {
-	n, err := strconv.Atoi(value)
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	return n
-}

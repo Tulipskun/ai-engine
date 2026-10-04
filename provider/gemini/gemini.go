@@ -224,7 +224,7 @@ func (c *Client) Generate(ctx context.Context, req provider.Request) (provider.R
 	}
 	return ToOpenAIResponse(r, req.Model), nil
 }
-func parse(r response, model string) provider.Response { return ToOpenAIResponse(r, model) }
+
 func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 	req.Stream = true
 	ch := make(chan provider.Event, 16)

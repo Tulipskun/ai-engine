@@ -202,15 +202,6 @@ func (s *Session) SetSeed(seed int64) error {
 func (s *Session) ClearSeed() error {
 	return s.updateConfig(func(config *provider.SessionConfig) error { config.Seed = nil; return nil })
 }
-
-func validThinkingLevel(level provider.ThinkingLevel) bool {
-	switch level {
-	case provider.ThinkingNone, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh:
-		return true
-	default:
-		return false
-	}
-}
 func (s *Session) updateConfig(update func(*provider.SessionConfig) error) error {
 	if s == nil {
 		return errors.New("sdk: session is nil")

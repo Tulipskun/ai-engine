@@ -565,6 +565,8 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (prov
 	// this contract — a follow-up or continued job keeps the stored session, so
 	// the worker remembers what it already did.
 	worker, err := m.agent.Sessions.ResolveWorker(ctx, job.workerID, func(cfg *provider.SessionConfig) {
+		// The worker's session says it is a worker; nothing else has to.
+		cfg.AgentMode = provider.AgentModeSub
 		cfg.Provider = provider.ProviderID(providerLocal)
 		cfg.Model = model
 		cfg.Workspace = workspace
@@ -591,7 +593,7 @@ func (m *subAgentManager) runWorker(ctx context.Context, job *subAgentJob) (prov
 	} else {
 		prompt += "\n\nInvestigation mode: inspect the repository and return only the requested findings. Do not modify the project unless the investigation task explicitly requires it."
 	}
-	workerAgent := &Agent{Client: m.agent.Client, Tools: m.agent.Tools, MaxRetries: m.agent.MaxRetries, DisablePlanning: true, SubAgentConfig: SubAgentConfig{Enabled: false}}
+	workerAgent := &Agent{Client: m.agent.Client, Tools: m.agent.Tools, MaxRetries: m.agent.MaxRetries, SubAgentConfig: SubAgentConfig{Enabled: false}}
 	req := provider.Request{Provider: provider.ProviderID(providerLocal), Model: model, SystemPrompt: prompt}
 	if m.cfg.MaxOutputTokens > 0 {
 		req.MaxOutputTokens = m.cfg.MaxOutputTokens
@@ -983,14 +985,20 @@ func responseText(resp provider.Response) string {
 	return b.String()
 }
 
-// runningJobID reports the parent's currently running job, for diagnostics.
-func (m *subAgentManager) runningJobID() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, job := range m.jobs {
-		if job.status == "running" {
-			return job.id
-		}
+// SetSubAgentSinks installs the report sink (progress + final handoff
+// reports injected into the planner session) and the live trace renderer
+// for worker jobs (REQ-019, REQ-021).
+func (a *Agent) SetSubAgentSinks(report func(SubAgentEvent), trace func(SubAgentEvent)) {
+	if a == nil {
+		return
 	}
-	return ""
+	a.subAgentMu.Lock()
+	a.subAgentReportSink = report
+	a.subAgentTraceSink = trace
+	manager := a.subAgents
+	a.subAgentMu.Unlock()
+	if manager != nil {
+		manager.SetEventSink(report)
+		manager.SetTraceSink(trace)
+	}
 }

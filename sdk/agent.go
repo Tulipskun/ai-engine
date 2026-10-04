@@ -30,11 +30,10 @@ type Agent struct {
 	// Sessions resolves every conversation, the phone's chats and the workers
 	// this agent delegates to alike. Delegation used to open its own database,
 	// which skipped key assignment, provider repointing and eviction.
-	Sessions        SessionResolver
-	Tools           ToolExecutor
-	MaxRetries      int
-	DisablePlanning bool
-	SubAgentConfig  SubAgentConfig
+	Sessions       SessionResolver
+	Tools          ToolExecutor
+	MaxRetries     int
+	SubAgentConfig SubAgentConfig
 
 	subAgentMu         sync.Mutex
 	subAgents          *subAgentManager
@@ -208,14 +207,10 @@ func (a *Agent) runTurn(ctx context.Context, sessionLocal *session.Session, user
 	return provider.Response{}, fmt.Errorf("%w: attempts=%d: %w", ErrAgentRetriesExhausted, retries+1, lastErr)
 }
 
-// planningFor reports whether the turn for session runs through the Main
-// Agent planner. A session in sub mode answers as a worker with the full
-// execution tool set, independent of the global DisablePlanning switch, so
-// one channel can run direct while others keep planning (REQ-029).
+// planningFor reports whether this session answers through the Main Agent
+// planner or as a worker. The answer lives on the session, so a phone's chat
+// and a worker's own session are decided by exactly one field (REQ-029).
 func (a *Agent) planningFor(sessionLocal *session.Session) bool {
-	if a != nil && a.DisablePlanning {
-		return false
-	}
 	if sessionLocal == nil {
 		return true
 	}
@@ -612,9 +607,7 @@ func withToolCall(call *provider.ToolCall) func(*TraceEvent) {
 func withToolResult(result *provider.ToolResult) func(*TraceEvent) {
 	return func(event *TraceEvent) { event.ToolResult = result }
 }
-func withText(text string) func(*TraceEvent) {
-	return func(event *TraceEvent) { event.Text = text }
-}
+
 func withErr(err error) func(*TraceEvent) {
 	return func(event *TraceEvent) { event.Err = err }
 }

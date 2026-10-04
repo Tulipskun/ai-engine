@@ -184,12 +184,6 @@ func BuildFromOpenAI(openAIReq map[string]any) map[string]any {
 	}
 	return b
 }
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
 
 type response struct {
 	Model      string `json:"model"`

@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Tulipskun/ai-engine/io"
 	"github.com/Tulipskun/ai-engine/sdk"
 	"github.com/Tulipskun/ai-engine/session"
-	"github.com/Tulipskun/ai-engine/transport"
 )
 
 var version = "dev"
@@ -130,8 +130,8 @@ func run(ctx context.Context) error {
 	sessions := session.NewSessionManagerWithProviders(sessionDB, baseSession, rt.ProviderConfigs)
 	defer sessions.Close()
 	providerManager := runtime.NewProviderManager(providerConfigPath, rt, providerFile)
-	inputConfigPath := filepath.Join(state, transport.DefaultConfigPath)
-	transportConfig, err := transport.LoadConfig(inputConfigPath)
+	inputConfigPath := filepath.Join(state, io.DefaultConfigPath)
+	transportConfig, err := io.LoadConfig(inputConfigPath)
 	if err != nil {
 		return err
 	}

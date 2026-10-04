@@ -39,9 +39,6 @@ func sessionDir(path string) string {
 	return clean
 }
 
-func NewSessionManager(path string, base provider.SessionConfig, keys *provider.KeyPool) *SessionManager {
-	return &SessionManager{dir: sessionDir(path), base: base, keys: keys, providerKeys: make(map[provider.ProviderID]*provider.KeyPool), sessions: make(map[string]*list.Element), lru: list.New(), maxCached: defaultMaxCachedSessions}
-}
 func NewSessionManagerWithProviders(path string, base provider.SessionConfig, providers []provider.ProviderConfig) *SessionManager {
 	providerKeys := make(map[provider.ProviderID]*provider.KeyPool, len(providers))
 	var fallback *provider.KeyPool
