@@ -102,18 +102,28 @@ func (b *mobileIO) waitUserMirror(sessionID string) {
 
 // ---------------------------------------------------------------- outbound
 
-// Display is the harness-facing sink. The transport publishes the frames; this
-// call mirrors the finished turn into D1 first and only then lets the phone see
-// it, because the phone refreshes from D1 the moment the done frame arrives. A
-// display-before-mirror order makes the streamed answer vanish for a race window
-// (AXCH-025).
+// Display is the harness-facing sink. A finished main turn is
+// mirrored into D1 before the phone is told about it, because the
+// app refreshes from D1 the moment the done frame arrives — a
+// display-before-mirror order makes the streamed answer vanish for
+// a race window (AXCH-025). The output is then forwarded to the
+// transport in every shape it arrives: deltas, tool calls,
+// reasoning, a worker's progress and the final answer, so the
+// phone sees the turn live, not only its ending.
 func (b *mobileIO) Display(ctx context.Context, output io.Output) error {
-	b.publishOutput(ctx, output)
-	return nil
+	if b == nil || b.mobile == nil || b.mobile.transport == nil {
+		return nil
+	}
+	b.mirrorOutput(ctx, output)
+	return b.mobile.transport.Display(ctx, output)
 }
 
-// publishOutput writes one finished turn to D1 and then to the phone.
-func (b *mobileIO) publishOutput(ctx context.Context, output io.Output) {
+// mirrorOutput writes one finished turn to D1. A worker's own turn
+// is reported through its job frames, not as a chat message, so it
+// is not mirrored. A failure here is logged and never swallows the
+// answer on the phone: the turn still displays, it only does not
+// survive a restart.
+func (b *mobileIO) mirrorOutput(ctx context.Context, output io.Output) {
 	if b == nil || b.mobile == nil || b.mobile.transport == nil {
 		return
 	}
@@ -164,9 +174,6 @@ func (b *mobileIO) publishOutput(ctx context.Context, output io.Output) {
 	}
 	log.Printf("mobile: mirrored answer session=%s seq=%d model=%s in=%d out=%d ms=%d",
 		output.SessionID, seq, meta.Model, meta.InputTokens, meta.OutputTokens, meta.DurationMs)
-	if err := b.mobile.transport.Display(ctx, output); err != nil {
-		log.Printf("mobile: display source=%s session=%s: %v", output.Source, output.SessionID, err)
-	}
 }
 
 // turnMirror keeps one D1 row per finished turn, keyed by session and text.

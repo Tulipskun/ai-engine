@@ -750,6 +750,21 @@ func (c *Client) appendTurn(ctx context.Context, sessionID, role, agent, jobID, 
 	return seq.Seq, nil
 }
 
+// AnnounceTunnelURL records the daemon's public quick-tunnel URL in the
+// tunnel table, replacing the previous row. The phone reads this table
+// directly to find the daemon (CHANGE-106); the nodes row is no longer
+// written by the daemon.
+func (c *Client) AnnounceTunnelURL(ctx context.Context, tunnelURL string) error {
+	if strings.TrimSpace(tunnelURL) == "" {
+		return errors.New("d1store: tunnel URL is required")
+	}
+	if _, err := c.query(ctx, "DELETE FROM tunnel", nil); err != nil {
+		return err
+	}
+	_, err := c.query(ctx, "INSERT INTO tunnel (url) VALUES (?)", []string{tunnelURL})
+	return err
+}
+
 // Heartbeat announces the public quick-tunnel URL so the phone can discover
 // this daemon through the same D1 it already has a token for.
 func (c *Client) Heartbeat(ctx context.Context, tunnelURL, version string) error {

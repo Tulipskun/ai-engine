@@ -4,9 +4,8 @@ Read this file first. It maps the whole repository in one call so workers
 skip 5-10 discovery calls: there is no list or search tool, so this file and
 the shell are the only map. Read files with `read` one at a time, and reach
 for `bash` (`ls`, `rg`, `sed`, `cat`, `go test`) for everything else.
-Before any code change read this file plus relevant requirements; after any
-code change update this file when structure or key files changed and update
-requirements plus `requirements/changes.md` when behavior or spec changed.
+Before any code change read this file; after any
+code change update this file when structure or key files changed.
 
 ## Top-level tree
 
@@ -23,15 +22,18 @@ touching code; the tree is the map a worker has instead of a search tool.
 │   ├── capabilities.go what each model family accepts
 │   ├── validate.go    bounds a provider will accept
 │   ├── registry/      binds config/provider.json to the adapters (needs them)
-│   └── {openai,anthropic,gemini,opencode,internal}/  the wire adapters
+│   └── {openai,anthropic,gemini,opencode}/  the wire adapters
 ├── session/        which session a message belongs to, and what it remembers
 ├── tools/          the worker's whole world: read + bash, workspace-confined
 ├── io/             canonical Input/Output, Display routing, trace
 │   ├── gateway/      WebSocket server, auth gate, tunnel, REST for the phone
 │   └── state/        Cloudflare D1: authoritative state, hydrate/push
 ├── agent/          the turn loop, the planner, delegation, loop control
-├── cmd/ai-engine/  main.go: assemble, open the socket and tunnel, run
-├── requirements/   source of truth for product behaviour (read before code)
+├── main.go         composition root: CF_TOKEN verify, assemble, run, tunnel
+├── mobile.go       mobile runtime: gateway wiring, D1 hydrate/push, model store
+├── io.go           mobileIO: WS frames ↔ canonical turns, D1 turn mirror
+├── admin_store.go  provider keys + agent settings the phone writes
+├── agent.go        agent construction, system prompts, workspace root
 ├── skills/         contributor procedures
 ├── AGENTS.md       spec-first rule + module discipline
 ├── README.md       how to run the daemon
@@ -59,10 +61,8 @@ rather than importing `session`.
 | Shell tool | `tools/command.go` |
 | Runtime config load/save, session manager | `agent/system_config.go`, `provider/registry/config.go`, `session/manager.go`, `provider/registry/config_test.go` |
 | Stateless runtime state ↔ Cloudflare D1 | `io/state/client.go`, `io/state/sync.go` |
-| Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (provider/key pool + agent settings ที่มือถือจัดการ), `cmd/ai-engine/mobile.go` |
-| Inbound/outbound boundary between WS and canonical turns | `cmd/ai-engine/io.go` (`mobileIO`: WS → `io.Input`, `io.Output` → frames, D1 mirror ทั้งสองทาง) |
-| Agent construction, system prompts, workspace root | `cmd/ai-engine/agent.go` |
-| Phone-owned provider keys + per-agent routes (file ↔ D1) | `cmd/ai-engine/admin_store.go`, `provider/registry/manager.go` (Reload/Rt/RefreshProvider) |
+| Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (provider/key pool + agent settings ที่มือถือจัดการ) |
+| Composition root: CF_TOKEN verify → assemble → harness loop → tunnel | `main.go` (boot: verify token, resolve account/database จาก token, adopt ใน RAM), `mobile.go` (`newMobileRuntime`: gateway wiring + hydrate/push), `io.go` (`mobileIO`: mirror turn ลง D1 ก่อนแสดงผล, AXCH-025), `admin_store.go`, `agent.go` |
 
 ## Key files (what each owns)
 
@@ -71,9 +71,6 @@ rather than importing `session`.
   Enforces REQ-045 loop-control caps per attempt (fail-fast, never retried).
 - `agent/loop_control.go` — hard loop caps (max tools/turn, max consecutive
   read/edit, max bash output) with the fatal-error classifier. No transport.
-- `requirements/loop-control.md` — ordered checklist, per-delegation tool
-  budgets, batch-read and stop rules (REQ-045 prompt discipline).
-- `requirements/lessons.md` — append-only failure lessons (REQ-045).
 - `agent/subagent.go` — async delegation (`delegate_task` starts and returns a job
   id at once, `delegate_message` sends more work into the same worker session,
   `delegate_stop` blocks, `delegate_status` reads one job, `delegate_result`
@@ -100,16 +97,8 @@ rather than importing `session`.
   phone's admin store writes through these rather than re-implementing the
   mkdir/chmod/write rules.
 
-## Requirements and docs pointers
+## Docs pointers
 
-- `requirements/README.md` — how to read the spec directory.
-- `requirements/product.md` — product purpose and goals.
-- `requirements/functional.md` — stable REQ-xxx behavior (check before code).
-- `requirements/loop-control.md` — loop checklist + tool budgets (REQ-045).
-- `requirements/lessons.md` — failure lessons log (REQ-045).
-- `requirements/constraints.md` — non-negotiable limits (CON-xxx).
-- `requirements/decisions.md` — accepted architecture decisions.
-- `requirements/changes.md` — append-only CHANGE-xxx history.
 - `AGENTS.md` — spec-first workflow and module-discipline rule.
 
 Generation settings (REQ-049) live in `agent/types.go` (the knobs and their single
@@ -125,20 +114,20 @@ through `io/gateway/generation.go`.
   file; keep the change in the owning module (no cross-module refactors).
 - Provider / catalogue / retry issue: `agent/router_client.go` +
   `provider/router.go` + `provider/client.go` + `provider/<adapter>/`.
-- Daemon start / gateway / tunnel / D1 hydration: `cmd/ai-engine/main.go`
-  (entry point), `cmd/ai-engine/mobile.go`, `io/gateway/`, `io/state/`.
-- Inbound WS event or outbound frame / D1 mirroring: `cmd/ai-engine/io.go`.
+- Daemon start / gateway / tunnel / D1 hydration: `main.go`
+  (entry point: verify CF_TOKEN, resolve account/database, adopt in
+  RAM, assemble, run the harness loop), `mobile.go`, `io/gateway/`,
+  `io/state/`.
+- Inbound WS event or outbound frame / D1 mirroring: `io.go`.
 - Session persist / workspace / settings: `agent/session_db.go` +
   `agent/session_settings.go` + `session/manager.go`.
 - Config or state that must come from D1 instead of disk: `io/state/`
   keys `config:*` and `sessions/<id>` (CON-012).
-- Mobile app (AIxodia) gateway: `io/gateway/` plus `cmd/ai-engine/mobile.go`;
-  core orchestration stays untouched. There is no other transport
-  (CHANGE-059).
-- Stateless runtime state / D1 sync: `io/state/` only (CON-012 keeps
-  `config/*.json` and one SQLite file per session as the local materialization).
-- New spec conflict: update `requirements/` + append `requirements/changes.md`
-  before implementing (see `AGENTS.md` and `skills/`).
+- Mobile app (AIxodia) gateway: `io/gateway/` plus `mobile.go` and
+  `main.go`; core orchestration stays untouched. There is no other
+  transport (CHANGE-059).
+- Stateless runtime state / D1 sync: `io/state/` only (local materialization
+  stays `config/*.json` plus one SQLite file per session).
 
 ## Tests
 

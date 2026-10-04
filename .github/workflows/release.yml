@@ -18,7 +18,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Test
-        run: go test ./agent/... ./db/... ./io/... ./provider/... ./session/... ./tools/... -timeout 2m
+        run: go test ./agent/... ./io/... ./provider/... ./session/... ./tools/... -timeout 2m
       - name: Build
         run: |
           set -e

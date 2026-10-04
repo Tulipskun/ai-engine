@@ -136,7 +136,7 @@ type Config struct {
 	CancelTurn     func(sessionID string) bool         // stops the turn a phone asked to stop
 	CancelSubAgent func(sessionID, jobID string) error // stops one sub agent job, leaving the turn
 	ReportError    func(sessionID, message string)     // shows a turn failure on the phone
-	Announce       func(context.Context, string) error // publishes the tunnel URL (D1 `nodes`)
+	Announce       func(context.Context, string) error // publishes the tunnel URL (D1 `tunnel`)
 	InputBuffer    int
 	// Claim and Successor are the handover, kept beside Announce because they
 	// answer the same question from the other side: Claim says this daemon is the

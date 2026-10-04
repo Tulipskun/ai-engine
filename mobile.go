@@ -110,7 +110,10 @@ func newMobileRuntime(stateRoot, sessionDir string, cfg runtimeMobileConfig, rel
 			if target, ok := client.ResolvedTarget(); ok {
 				log.Printf("mobile: announcing tunnel to D1 account=%s database=%s (%s)", target.AccountID, target.Name, target.DatabaseID)
 			}
-			return client.Heartbeat(ctx, publicURL, rt.transport.Version())
+			// The phone reads the tunnel table directly to find the
+			// daemon (CHANGE-106), so the public URL goes there — not
+			// in the nodes row.
+			return client.AnnounceTunnelURL(ctx, publicURL)
 		},
 		Claim: func(ctx context.Context, publicURL string) error {
 			return client.ClaimHandover(ctx, instanceID(), publicURL, rt.transport.Version(), startedAt)

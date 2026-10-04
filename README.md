@@ -50,8 +50,8 @@ no screen control, no background job manager and no `web_fetch` tool — `bash`
 
 - **One ingress**: `io/gateway` listens on localhost and publishes itself
   with `cloudflared tunnel --url …`. The daemon writes the random URL into the
-  D1 `nodes` row as its own heartbeat — and answers `GET /api/node` with the same
-  values — so a client can find it through either route.
+  D1 `tunnel` table — the phone reads that table directly to find the daemon —
+  and answers `GET /api/node` from the `nodes` row the same way it always has.
 - **Two-step access** (REQ-046): the unguessable tunnel hostname, then
   `Authorization: Bearer <Cloudflare API token>` on the WebSocket handshake,
   verified against Cloudflare (`GET /user/tokens/verify`) before the socket is
