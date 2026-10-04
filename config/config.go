@@ -11,11 +11,12 @@ import (
 )
 
 type Provider struct {
-	ID     string
-	Name   string
-	APIURL string
-	APIKey string
-	Model  string
+	ID      string
+	Name    string
+	APIURL  string
+	APIKey  string
+	Adapter string
+	Free    bool
 }
 
 var (
@@ -69,12 +70,30 @@ func GetProvider(id string) (Provider, bool) {
 
 func providerFromRow(row map[string]any) (Provider, error) {
 	return Provider{
-		ID:     intString(row["index"]),
-		Name:   stringValue(row["provider"]),
-		APIURL: stringValue(row["endpoint"]),
-		APIKey: firstKey(row["keys"]),
-		Model:  "",
+		ID:      intString(row["index"]),
+		Name:    stringValue(row["provider"]),
+		APIURL:  stringValue(row["endpoint"]),
+		APIKey:  firstKey(row["keys"]),
+		Adapter: stringValue(row["adapter"]),
+		Free:    boolValue(row["free"]),
 	}, nil
+}
+
+// boolValue reads a D1 0/1 (decoded as float64) as a bool.
+func boolValue(value any) bool {
+	switch value := value.(type) {
+	case float64:
+		return value != 0
+	case int:
+		return value != 0
+	case bool:
+		return value
+	case string:
+		v := strings.TrimSpace(value)
+		return v == "1" || strings.EqualFold(v, "true")
+	default:
+		return false
+	}
 }
 
 // intString renders a D1 number (decoded as float64) without a decimal
