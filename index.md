@@ -64,8 +64,8 @@ their full paths.
 | Shell tool | `tools/command.go` |
 | Runtime config load/save, session manager | `session/system_config.go`, `provider/registry/config.go`, `session/manager.go`, `provider/registry/config_test.go` |
 | Stateless runtime state ↔ Cloudflare D1 | `db/client.go` (`providers`/`tunnel`/`nodes`/`sessions`/`turns`/`state` tables, hydrate/push), `db/sync.go` |
-| Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (provider/key pool + agent settings ที่มือ�Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (provider/key pool + agent settings ที่มือถือจัดการ) |
-| Composition root: CF_TOKEN verify → assemble → harness loop → tunnel | `main.go` (boot: verify token, resolve account/database จาก token, adopt ใน RAM), `mobile.go` (`newMobileRuntime`: gateway wiring + hydrate/push), `io.go` (`mobileIO`: mirror turn ลง D1 ก่อนแสดงผล, AXCH-025), `admin_store.go`, `agent.go` |
+| Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (REST surface), `io/gateway/mobile.go` (runtime wiring + Attach), `io/gateway/display.go` (D1 mirror display), `io/gateway/admin_store.go` (provider keys + agent settings ที่มือถือจัดการ), `io/gateway/agent.go` (agent construction, prompts, workspace) |
+| Composition root: CF_TOKEN verify → assemble → harness loop → tunnel | `main.go` เท่านั้น (boot: verify token, providers จากตาราง D1, assemble ผ่าน `gateway.Attach`, รัน `session.HarnessLoop`) |
 
 ## Key files (what each owns)
 
@@ -111,23 +111,24 @@ through `io/gateway/generation.go`.
 
 ## Start-here routes
 
-- Fix a turn-loop bug: `session/agent.go` + `harness.go` + `session/context_window.go`.
+- Fix a turn-loop bug: `session/agent.go` + `session/harness.go` + `session/context_window.go`.
 - Change planner/worker behavior: `session/plan_tool.go` + `session/subagent.go`.
 - Add or change a worker tool: `tools/registry.go` + owning `tools/*.go`
   file; keep the change in the owning module (no cross-module refactors).
 - Provider / catalogue / retry issue: `provider/client.go` +
-  `provider/router.go` + `provider/client.go` + `provider/<adapter>/`.
+  `provider/router.go` + `provider/<adapter>/`.
 - Daemon start / gateway / tunnel / D1 hydration: `main.go`
-  (entry point: verify CF_TOKEN, resolve account/database, adopt in
-  RAM, assemble, run the harness loop), `mobile.go`, `io/gateway/`,
+  (entry point: verify CF_TOKEN, providers จากตาราง D1, assemble
+  ผ่าน `gateway.Attach`, รัน `session.HarnessLoop`), `io/gateway/`,
   `db/`.
-- Inbound WS event or outbound frame / D1 mirroring: `io.go`.
+- Inbound WS event or outbound frame / D1 mirroring: `io/gateway/display.go`.
 - Session persist / workspace / settings: `session/db.go` +
   `session/settings.go` + `session/manager.go`.
 - Config or state that must come from D1 instead of disk: `db/`
   keys `config:*` and `sessions/<id>` (CON-012).
-- Mobile app (AIxodia) gateway: `io/gateway/` plus `mobile.go` and
-  `main.go`; core orchestration stays untouched. There is no other
+- Mobile app (AIxodia) gateway: `io/gateway/` ทั้งหมด (wiring อยู่ใน
+  `mobile.go` + `Attach`); `main.go` เป็นแค่ entry point.
+  core orchestration stays untouched. There is no other
   transport (CHANGE-059).
 - Stateless runtime state / D1 sync: `db/` only (local materialization
   stays `config/*.json` plus one SQLite file per session).

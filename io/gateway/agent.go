@@ -1,4 +1,4 @@
-package main
+package gateway
 
 import (
 	"ai-engine/provider"
@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ai-engine/io"
 	"ai-engine/tools"
 )
 
@@ -21,7 +22,7 @@ import (
 
 // newAgentWithWorkspaces builds the Agent with its worker tool registry and the
 // per-session workspace lookup, then applies the stored sub-ag defaults.
-func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg session.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*session.Agent, error) {
+func NewAgentWithWorkspaces(client *provider.RouterClient, workspace, state string, cfg session.SystemConfig, workspaceFor func(context.Context) string, sessions *session.SessionManager) (*session.Agent, error) {
 	registry, err := tools.NewRegistry(workspace)
 	if err != nil {
 		return nil, err
@@ -45,11 +46,30 @@ func newAgentWithWorkspaces(client *provider.RouterClient, workspace, state stri
 	return ag, nil
 }
 
+// StateRoot answers where the daemon's local state lives: the
+// ~/.local/share/ai layout. The local files are only the materialized copy
+// of the D1 state — a daemon that loses its whole state directory comes
+// back once a phone connects and hands its token over.
+func StateRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", err
+	}
+	root := filepath.Join(home, ".local", "share", "ai")
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(MobileSessionDir(root), 0o700); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
 func systemPrompt(ag *session.Agent) string {
 	base := ""
 	if value := strings.TrimSpace(os.Getenv("AI_SYSTEM_PROMPT")); value != "" {
 		base = value
-	} else if state, err := stateRoot(); err == nil {
+	} else if state, err := StateRoot(); err == nil {
 		if cfg, err := session.LoadSystemConfig(filepath.Join(state, session.DefaultSystemConfigPath)); err == nil {
 			base = cfg.SystemPrompt
 		}
@@ -58,6 +78,23 @@ func systemPrompt(ag *session.Agent) string {
 		base = defaultSystemPrompt(ag)
 	}
 	return base
+}
+
+// NewRequestResolver builds the resolver the harness loop calls before a
+// turn: the session's route, the Main Agent prompt and the instruction
+// files. The agent fills in the per-attempt tools and the planning prompt
+// itself, so the request stays the minimal shape the loop needs.
+func NewRequestResolver(ag *session.Agent) session.RequestResolver {
+	return func(ctx context.Context, input io.Input, sess *session.Session) (provider.Request, error) {
+		cfg := sess.Config()
+		return provider.Request{
+			Model:           cfg.Model,
+			SystemPrompt:    systemPrompt(ag),
+			Instructions:    instructionFiles(),
+			Stream:          true,
+			MaxOutputTokens: cfg.MaxOutputTokens,
+		}, nil
+	}
 }
 
 // instructionFiles are the project's instruction files, found the way the
@@ -83,7 +120,7 @@ func instructionFiles() []provider.Instruction {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		add(filepath.Join(home, ".config", "opencode", "AGENTS.md"))
 	}
-	dir, err := resolveWorkspace()
+	dir, err := ResolveWorkspace()
 	if err != nil || dir == "" {
 		return out
 	}
@@ -115,7 +152,9 @@ func defaultSystemPrompt(ag *session.Agent) string {
 	return b.String()
 }
 
-func resolveWorkspace() (string, error) {
+// ResolveWorkspace answers where the worker tools run: AI_WORKSPACE when it
+// names a real directory, else the operator's home.
+func ResolveWorkspace() (string, error) {
 	raw := strings.TrimSpace(os.Getenv("AI_WORKSPACE"))
 	if raw == "" {
 		home, err := os.UserHomeDir()

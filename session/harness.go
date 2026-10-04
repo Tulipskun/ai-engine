@@ -1,9 +1,8 @@
-package main
+package session
 
 import (
 	"ai-engine/io"
 	"ai-engine/provider"
-	"ai-engine/session"
 	"context"
 	"errors"
 	"log"
@@ -11,13 +10,13 @@ import (
 	"time"
 )
 
-type RequestResolver func(context.Context, io.Input, *session.Session) (provider.Request, error)
+type RequestResolver func(context.Context, io.Input, *Session) (provider.Request, error)
 
 type HarnessLoop struct {
 	Client         *provider.RouterClient
-	Agent          *session.Agent
+	Agent          *Agent
 	Source         io.InputSource
-	ResolveSession func(context.Context, io.Input) (*session.Session, error)
+	ResolveSession func(context.Context, io.Input) (*Session, error)
 	BuildRequest   RequestResolver
 	Displays       []io.Display
 	DisplayTimeout time.Duration
@@ -62,7 +61,7 @@ func (h *HarnessLoop) Run(ctx context.Context) error {
 		return errors.New("sdk: incomplete harness loop configuration")
 	}
 	if h.Agent != nil {
-		h.Agent.SetSubAgentSinks(func(event session.SubAgentEvent) {
+		h.Agent.SetSubAgentSinks(func(event SubAgentEvent) {
 			if event.Parent == nil {
 				return
 			}
@@ -80,7 +79,7 @@ func (h *HarnessLoop) Run(ctx context.Context) error {
 					}
 				}
 			}()
-		}, func(event session.SubAgentEvent) {
+		}, func(event SubAgentEvent) {
 			if event.Parent == nil || event.Trace == nil {
 				return
 			}
@@ -158,8 +157,8 @@ func (h *HarnessLoop) Entry(ctx context.Context, input io.Input) error {
 			return err
 		}
 	}
-	req.Messages = session.CloneTurns(sessionLocal.History())
-	req.Messages = append(req.Messages, session.CloneTurn(input.Turn))
+	req.Messages = CloneTurns(sessionLocal.History())
+	req.Messages = append(req.Messages, CloneTurn(input.Turn))
 	var responseTraced bool
 	dispatchTrace := func(traceCtx context.Context, event io.TraceEvent) {
 		switch event.Stage {
@@ -176,7 +175,7 @@ func (h *HarnessLoop) Entry(ctx context.Context, input io.Input) error {
 			io.DispatchDisplay(traceCtx, display, io.Output{Source: input.Source, SessionID: input.SessionID, Trace: &traceCopy, Metadata: metadata}, h.DisplayTimeout)
 		}
 	}
-	ctx = session.WithSessionID(ctx, sessionLocal.ID())
+	ctx = WithSessionID(ctx, sessionLocal.ID())
 	ctx = context.WithValue(ctx, io.LifecycleInputKey{}, io.CloneInputRoute(input))
 	// Per-session agent config (sub-agent pin) takes precedence over the
 	// global defaults for this turn only (ACP session config pattern).

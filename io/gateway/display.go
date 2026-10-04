@@ -1,4 +1,4 @@
-package main
+package gateway
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 
 	"ai-engine/db"
 	"ai-engine/io"
-	"ai-engine/io/gateway"
 )
 
 // mobileIO is the daemon's input/output boundary for the phone. One direction
@@ -21,7 +20,7 @@ import (
 // here: transport/mobile owns the frames and the handshake, and this type only
 // bridges them to the harness.
 type mobileIO struct {
-	mobile *mobileRuntime
+	mobile *MobileRuntime
 
 	// turns keeps one D1 row per finished turn. The sdk reports the same answer
 	// twice for some providers (a content event, then the terminal one), and a
@@ -38,13 +37,13 @@ type mobileIO struct {
 	mirrorGates map[string]chan struct{}
 }
 
-func newMobileIO(mobile *mobileRuntime) *mobileIO {
+func newMobileIO(mobile *MobileRuntime) *mobileIO {
 	return &mobileIO{mobile: mobile}
 }
 
 // Source makes this an agent.RoutedDisplay, so agent.DispatchDisplay hands it only
 // the output that belongs to the phone.
-func (b *mobileIO) Source() string { return gateway.SourceName }
+func (b *mobileIO) Source() string { return SourceName }
 
 // ---------------------------------------------------------------- inbound
 
@@ -111,11 +110,11 @@ func (b *mobileIO) waitUserMirror(sessionID string) {
 // reasoning, a worker's progress and the final answer, so the
 // phone sees the turn live, not only its ending.
 func (b *mobileIO) Display(ctx context.Context, output io.Output) error {
-	if b == nil || b.mobile == nil || b.mobile.transport == nil {
+	if b == nil || b.mobile == nil || b.mobile.Transport == nil {
 		return nil
 	}
 	b.mirrorOutput(ctx, output)
-	return b.mobile.transport.Display(ctx, output)
+	return b.mobile.Transport.Display(ctx, output)
 }
 
 // mirrorOutput writes one finished turn to D1. A worker's own turn
@@ -124,14 +123,14 @@ func (b *mobileIO) Display(ctx context.Context, output io.Output) error {
 // answer on the phone: the turn still displays, it only does not
 // survive a restart.
 func (b *mobileIO) mirrorOutput(ctx context.Context, output io.Output) {
-	if b == nil || b.mobile == nil || b.mobile.transport == nil {
+	if b == nil || b.mobile == nil || b.mobile.Transport == nil {
 		return
 	}
 	// A worker's own turn is reported through its job, not as a chat message.
 	if output.Trace != nil && strings.EqualFold(output.Metadata["trace_actor"], "subagent") {
 		return
 	}
-	text := gateway.FinalText(output)
+	text := FinalText(output)
 	if output.SessionID == "" || text == "" {
 		return
 	}
