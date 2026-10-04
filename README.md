@@ -82,7 +82,7 @@ no screen control, no background job manager and no `web_fetch` tool — `bash`
 ```
 
 Provider keys, the system prompt and session history are **not** configured here
-— they live in D1 as `state` rows (`config:provider`, `config:system`,
+— they live in D1 as the `providers` table plus `state` rows (`config:system`,
 `sessions/<id>`) and are pulled in once the
 first verified phone connects. There is no `worker_base` any more: the daemon
 calls the Cloudflare API directly (`https://api.cloudflare.com/client/v4`) and

@@ -59,7 +59,7 @@ rather than importing `session`.
 | Read tool and workspace path discipline | `tools/files.go`, `tools/files_test.go` |
 | Shell tool | `tools/command.go` |
 | Runtime config load/save, session manager | `agent/system_config.go`, `provider/registry/config.go`, `session/manager.go`, `provider/registry/config_test.go` |
-| Stateless runtime state ↔ Cloudflare D1 | `io/state/client.go`, `io/state/sync.go` |
+| Stateless runtime state ↔ Cloudflare D1 | `io/state/client.go` (`providers`/`tunnel`/`nodes`/`sessions`/`turns`/`state` tables, hydrate/push), `io/state/sync.go` |
 | Mobile gateway (AIxodia, the only transport) + auth gate | `io/gateway/gateway.go`, `io/gateway/auth.go`, `io/gateway/auth_test.go`, `io/gateway/tunnel.go`, `io/gateway/history.go` (ประวัติแชทจาก D1 ผ่าน tunnel), `io/gateway/admin.go` (provider/key pool + agent settings ที่มือถือจัดการ) |
 | Composition root: CF_TOKEN verify → assemble → harness loop → tunnel | `main.go` (boot: verify token, resolve account/database จาก token, adopt ใน RAM), `mobile.go` (`newMobileRuntime`: gateway wiring + hydrate/push), `io.go` (`mobileIO`: mirror turn ลง D1 ก่อนแสดงผล, AXCH-025), `admin_store.go`, `agent.go` |
 

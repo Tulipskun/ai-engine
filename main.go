@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -74,9 +75,28 @@ func main() {
 		log.Printf("ai-engine: D1 ready account=%s database=%s (%s)", target.AccountID, target.Name, target.DatabaseID)
 	}
 
-	// Provider runtime: whatever the local copy holds at boot. A fresh
-	// daemon starts empty and picks the operator's providers up from the
-	// D1 copy once the first verified phone hydrates it (REQ-046(4)).
+	// Provider runtime comes from the D1 providers table, not from the
+	// local file: the table is authoritative, the file is only the
+	// materialized cache the loader reads. An empty table (first boot
+	// after the move) seeds itself once from the retired
+	// config:provider blob; the blob itself is left alone.
+	if err := client.EnsureProvidersTable(ctx); err != nil {
+		log.Fatalf("ai-engine: ensure providers table: %v", err)
+	}
+	rows, err := client.ListProviders(ctx)
+	if err != nil {
+		log.Fatalf("ai-engine: list providers from D1: %v", err)
+	}
+	if len(rows) == 0 {
+		rows = seedProvidersFromBlob(ctx, client)
+	}
+	if len(rows) > 0 {
+		file := providerRowsToFile(rows)
+		if err := registry.SaveProviderFile(providerPath, file); err != nil {
+			log.Fatalf("ai-engine: materialize provider config: %v", err)
+		}
+		log.Printf("ai-engine: provider runtime from D1 providers table (%d providers)", len(rows))
+	}
 	providerConfig, err := registry.LoadProviderFile(providerPath)
 	if err != nil {
 		log.Fatalf("ai-engine: provider config: %v", err)
@@ -193,8 +213,58 @@ func main() {
 	}
 	defer stopHTTP()
 
-	log.Printf("ai-engine: gateway on %s behind a quick tunnel (tunnel URL is announced in the D1 nodes row)", mobile.cfg.listen)
+	log.Printf("ai-engine: gateway on %s behind a quick tunnel (tunnel URL is announced in the D1 tunnel table)", mobile.cfg.listen)
 	<-ctx.Done()
+}
+
+// providerRowsToFile renders D1 provider rows as the file shape, so the
+// table can be materialized to disk through the single file writer.
+func providerRowsToFile(rows []state.ProviderRow) registry.ProviderFileConfig {
+	file := registry.ProviderFileConfig{Providers: make([]registry.ProviderFile, 0, len(rows))}
+	for _, row := range rows {
+		file.Providers = append(file.Providers, registry.ProviderFile{
+			Name: row.Name, Adapter: row.Adapter, HTTPEndpoint: row.Endpoint,
+			APIKeys:  append([]string(nil), row.APIKeys...),
+			FreeOnly: row.Free,
+		})
+	}
+	return file
+}
+
+// providerFileToRows renders the file shape as D1 provider rows. Index is
+// assigned by PutProviders in order, so it is not set here.
+func providerFileToRows(file registry.ProviderFileConfig) []state.ProviderRow {
+	rows := make([]state.ProviderRow, 0, len(file.Providers))
+	for _, p := range file.Providers {
+		rows = append(rows, state.ProviderRow{
+			Name: p.Name, Adapter: p.Adapter, Endpoint: p.HTTPEndpoint,
+			APIKeys: append([]string(nil), p.APIKeys...),
+			Free:    p.FreeOnly,
+		})
+	}
+	return rows
+}
+
+// seedProvidersFromBlob moves the retired config:provider blob into the
+// providers table once, on the first boot after the move. The blob itself
+// is left alone: the migration only reads, so a failed seed can always be
+// retried on the next boot.
+func seedProvidersFromBlob(ctx context.Context, client *state.Client) []state.ProviderRow {
+	raw, found, err := client.Get(ctx, "config:provider")
+	if err != nil || !found {
+		return nil
+	}
+	var file registry.ProviderFileConfig
+	if err := json.Unmarshal([]byte(raw), &file); err != nil || len(file.Providers) == 0 {
+		return nil
+	}
+	rows := providerFileToRows(file)
+	if err := client.PutProviders(ctx, rows); err != nil {
+		log.Printf("ai-engine: seed providers table: %v", err)
+		return nil
+	}
+	log.Printf("ai-engine: seeded providers table from config:provider (%d providers)", len(rows))
+	return rows
 }
 
 // buildRequest is the resolver the harness loop calls before a turn: the

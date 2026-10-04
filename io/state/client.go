@@ -790,6 +790,106 @@ func (c *Client) Node(ctx context.Context) (Node, bool, error) {
 	return list[0], true, nil
 }
 
+// ProviderRow is one provider in the D1 providers table. keys travels as
+// a JSON array and headers as a JSON object because D1 has no array
+// type; free_only is 0/1 for the same reason. index is the running
+// number (0, 1, 2, ...) the daemon assigns in provider order.
+type ProviderRow struct {
+	Index    int
+	Name     string
+	Adapter  string
+	Endpoint string
+	APIKeys  []string
+	Free     bool
+}
+
+// EnsureProvidersTable creates the providers table when it is missing.
+// "index" is quoted: it is a reserved word in SQLite.
+func (c *Client) EnsureProvidersTable(ctx context.Context) error {
+	if c == nil {
+		return errors.New("d1store: client is not configured")
+	}
+	_, err := c.query(ctx, `CREATE TABLE IF NOT EXISTS providers(
+		"index" INTEGER PRIMARY KEY,
+		provider TEXT NOT NULL DEFAULT '',
+		adapter TEXT NOT NULL DEFAULT '',
+		endpoint TEXT NOT NULL DEFAULT '',
+		keys TEXT NOT NULL DEFAULT '[]',
+		free INTEGER NOT NULL DEFAULT 0
+	)`, nil)
+	return err
+}
+
+// providerRowRaw is the wire shape of one providers row: the JSON columns
+// arrive as text and are parsed into ProviderRow by ListProviders.
+type providerRowRaw struct {
+	Index    int    `json:"index"`
+	Name     string `json:"provider"`
+	Adapter  string `json:"adapter"`
+	Endpoint string `json:"endpoint"`
+	Keys     string `json:"keys"`
+	Free     int    `json:"free"`
+}
+
+// ListProviders returns every provider in index order. A row whose JSON
+// does not parse fails the whole call: a half-read provider set would
+// route turns to the wrong keys.
+func (c *Client) ListProviders(ctx context.Context) ([]ProviderRow, error) {
+	res, err := c.query(ctx,
+		`SELECT "index", provider, adapter, endpoint, keys, free FROM providers ORDER BY "index"`,
+		nil)
+	if err != nil {
+		return nil, err
+	}
+	raws, err := queryInto[providerRowRaw](res.rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ProviderRow, 0, len(raws))
+	for _, raw := range raws {
+		var keys []string
+		if strings.TrimSpace(raw.Keys) != "" {
+			if err := json.Unmarshal([]byte(raw.Keys), &keys); err != nil {
+				return nil, fmt.Errorf("d1store: provider %q keys: %w", raw.Name, err)
+			}
+		}
+		out = append(out, ProviderRow{
+			Index: raw.Index, Name: raw.Name, Adapter: raw.Adapter,
+			Endpoint: raw.Endpoint, APIKeys: keys,
+			Free: raw.Free != 0,
+		})
+	}
+	return out, nil
+}
+
+// PutProviders replaces the whole providers table with rows, numbered
+// 0, 1, 2, ... in the given order. The table is tiny (a handful of
+// rows), so a full replace keeps the daemon from ever disagreeing with
+// D1 about a provider the phone just deleted.
+func (c *Client) PutProviders(ctx context.Context, rows []ProviderRow) error {
+	if _, err := c.query(ctx, "DELETE FROM providers", nil); err != nil {
+		return err
+	}
+	for i, row := range rows {
+		keys, err := json.Marshal(row.APIKeys)
+		if err != nil {
+			return fmt.Errorf("d1store: provider %q keys: %w", row.Name, err)
+		}
+		free := "0"
+		if row.Free {
+			free = "1"
+		}
+		_, err = c.query(ctx,
+			`INSERT INTO providers("index", provider, adapter, endpoint, keys, free)
+			 VALUES(?, ?, ?, ?, ?, ?)`,
+			[]string{strconv.Itoa(i), row.Name, row.Adapter, row.Endpoint, string(keys), free})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MemoryToken stores the Cloudflare token in RAM. It is the daemon's only
 // credential and it is intentionally volatile: a restart requires a phone to
 // hand it over again (REQ-046(3), CON-012).

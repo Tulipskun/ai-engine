@@ -576,18 +576,15 @@ func refusalMessage(err error) (error, bool) {
 	return nil, false
 }
 
-// saveProvidersLocked writes the file, syncs it to D1, and rebuilds the live
-// routers so the change takes effect without a restart. The caller holds a.mu.
+// saveProvidersLocked writes the providers to the D1 providers table and
+// the local file cache, then rebuilds the live routers so the change takes
+// effect without a restart. The caller holds a.mu.
 func (a *adminStore) saveProvidersLocked(ctx context.Context, file registry.ProviderFileConfig) error {
-	raw, err := json.MarshalIndent(file, "", "  ")
-	if err != nil {
-		return err
-	}
 	if err := registry.SaveProviderFile(a.providerPath, file); err != nil {
 		return err
 	}
 	if a.client != nil {
-		if err := a.client.Put(ctx, "config:provider", string(raw)); err != nil {
+		if err := a.client.PutProviders(ctx, providerFileToRows(file)); err != nil {
 			return err
 		}
 	}
