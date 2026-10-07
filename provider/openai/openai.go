@@ -12,7 +12,11 @@ import (
 	"ai-engine/provider"
 )
 
-type Adapter struct{}
+type Adapter struct {
+	// HeaderFunc is called once per HTTP request and its entries are merged
+	// into the outbound headers (used by the opencode client contract).
+	HeaderFunc func() map[string]string
+}
 
 func New() *Adapter { return &Adapter{} }
 
@@ -101,7 +105,7 @@ func (a *Adapter) Complete(ctx context.Context, req *provider.Request, prov prov
 	if err != nil {
 		return nil, err
 	}
-	resp, err := doRequest(ctx, prov, key, body, "application/json")
+	resp, err := a.doRequest(ctx, prov, key, body)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +153,7 @@ func (a *Adapter) Stream(ctx context.Context, req *provider.Request, prov provid
 	if err != nil {
 		return nil, err
 	}
-	resp, err := doRequest(ctx, prov, key, body, "application/json")
+	resp, err := a.doRequest(ctx, prov, key, body)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +296,7 @@ func textContent(content any) string {
 	}
 }
 
-func doRequest(ctx context.Context, prov provider.Provider, key string, body []byte, contentType string) (*http.Response, error) {
+func (a *Adapter) doRequest(ctx context.Context, prov provider.Provider, key string, body []byte) (*http.Response, error) {
 	endpoint, err := provider.Endpoint(prov.Endpoint, "/v1/chat/completions", "/chat/completions")
 	if err != nil {
 		return nil, err
@@ -302,8 +306,13 @@ func doRequest(ctx context.Context, prov provider.Provider, key string, body []b
 		return nil, err
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+key)
-	httpRequest.Header.Set("Content-Type", contentType)
+	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
 	httpRequest.Header.Set("User-Agent", provider.UserAgent)
+	if a.HeaderFunc != nil {
+		for name, value := range a.HeaderFunc() {
+			httpRequest.Header.Set(name, value)
+		}
+	}
 	return provider.HTTP.Do(httpRequest)
 }

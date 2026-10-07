@@ -6,6 +6,7 @@ import (
 
 	"ai-engine/provider"
 	"ai-engine/provider/openai"
+	"ai-engine/provider/opencode"
 )
 
 type Registry struct {
@@ -16,7 +17,7 @@ func New() *Registry {
 	adapter := openai.New()
 	return &Registry{adapters: map[string]provider.Adapter{
 		"openai":   adapter,
-		"opencode": adapter,
+		"opencode": opencode.New(),
 	}}
 }
 

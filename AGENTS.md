@@ -3,6 +3,7 @@
 ## Verify changes
 - `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./...` — the whole toolchain. No CI, no lint config, no Makefile.
 - `go test ./io/gateway` is the useful one: it drives the gateway end to end against a fake OpenAI upstream (no network, no D1) and covers model routing, the tool loop, SSE streaming, session persistence, and history merging. Run it after touching `io/gateway`, `provider/`, `session/`, or `tools/`.
+- `go test ./provider/opencode` checks the Zen free-tier request contract (headers, forced `stream`, injected tools) against a fake upstream — no network.
 - `db` and `config` cannot be unit-tested offline: `db.Verify` must hit api.cloudflare.com first or every call returns "Verify must succeed first".
 
 ## Architecture (not obvious from filenames)
@@ -37,17 +38,27 @@
 
 ## Adapters (`provider/`)
 - Shared types and the `Adapter` interface live in package `provider` (`provider/types.go`). They are **not** under `provider/internal/`: Go's `internal` rule would block `session`, `tools`, and `io/gateway` from importing them, and that directory was removed.
-- Only the **openai** adapter exists (streaming, tools, usage). Registry maps `opencode` → the same adapter (OpenCode Zen speaks the OpenAI protocol). `provider/anthropic` and `provider/gemini` are still empty placeholders — a D1 row using those adapter names fails with `unknown adapter`.
+- Two adapters: **openai** (streaming, tools, usage — also used by `agentrouter`, `tokenharbor`, `cavoti`, `NousResearch`) and **opencode** (wraps openai, see contract below). `provider/anthropic` and `provider/gemini` are still empty placeholders — a D1 row using those adapter names fails with `unknown adapter`.
 - Outbound HTTP must send `User-Agent: ai-engine/1.0` (`provider.UserAgent`). Cloudflare returns a 403 HTML challenge for Go's default `Go-http-client/1.1` — this was a real outage on NousResearch.
+- `openai.Adapter.HeaderFunc` is called per request and its entries overwrite the standard headers — that is the only hook the opencode adapter uses.
+
+### OpenCode Zen free-tier contract (`provider/opencode`)
+Verified by live probes against `https://opencode.ai/zen/v1/chat/completions` on 2026-10-07. All four conditions are required; missing any one gives `403 FreeTierError "can only be used from within OpenCode"` (426 `UpgradeRequired` if the UA version is below 1.18.0, 403 error 1010 if UA is absent):
+1. `User-Agent: opencode/<version>` — any version ≥ 1.18.0 works (`opencode/1.18.31` is what we send); `ai-engine/1.0` and `Go-http-client/1.1` are rejected. This overrides `provider.UserAgent`.
+2. `x-opencode-session: ses_<12 hex><14 base62>` — required and format-checked (all-zero timestamps rejected). We keep one per adapter instance and rotate `x-opencode-request: msg_<same shape>` per call. `x-opencode-client: cli`, `x-opencode-project: global` are sent for fidelity but are not independently required.
+3. Body must have `"stream": true` — a non-stream request is rejected even with correct headers. The adapter therefore always calls the openai stream path; `Complete` buffers the deltas into `Response.Content` (usage and `finish_reason` arrive on the final chunk).
+4. Body `tools` must include **both** `shell` (or `bash`) **and** `read` — the adapter injects placeholder defs for the missing ones (description says unavailable; our gateway returns `unknown tool` for them, so the model answers from its own knowledge). Extra tools (our builtins) alongside are accepted.
+
+Also: Zen intermittently returns `429 "Upstream request failed: Endpoint is unavailable."` (their capacity, not our request) — the gateway's 3-attempt retry covers it, same stance as NousResearch.
 
 ## Live provider state (verified 2026-10-07, all from this host)
 - **NousResearch** works: `inclusionai/ling-3.1-flash` returns real completions, but with frequent transient `429 temporarily at capacity upstream` — retry, do not treat as fatal.
-- **Opencode**: free models return `403 FreeTierError "can only be used from within OpenCode"` (client-gated); paid models return insufficient funds.
+- **Opencode**: free models (`ling-3.1-flash-free`, `big-pickle`, `mimo-v2.6-flash-free`, …) work through the `opencode` adapter — verified live with a `PONG` completion. Paid models still return insufficient funds. Frequent transient 429 capacity errors; retry.
 - **AgentRouter** answers `/models` with WAF HTML; **tokenharbor** balance is zero; **cavoti** has no eligible supplier. Errors surface as 502 with the upstream message — that is expected, not a bug in the engine.
 - Only `GET {endpoint}/models` (OpenAI style) is implemented for model discovery.
 
 ## Layout
-- Provider-specific logic goes in `provider/<name>/`, gateway logic in `io/gateway/`, model-calling helpers in `tools/`. Empty `.gitkeep` dirs (`provider/anthropic`, `provider/gemini`, `provider/opencode`, `io/`) are still reserved boundaries.
+- Provider-specific logic goes in `provider/<name>/`, gateway logic in `io/gateway/`, model-calling helpers in `tools/`. Empty `.gitkeep` dirs (`provider/anthropic`, `provider/gemini`, `io/`) are still reserved boundaries; `provider/opencode/` is now real code.
 - `session/` is real Go now (D1 store + context trimming) — the old pseudocode sketches are gone.
 
 ## Runtime requirements
