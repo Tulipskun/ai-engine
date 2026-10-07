@@ -17,6 +17,10 @@ import (
 
 	"ai-engine/config"
 	"ai-engine/db"
+	"ai-engine/io/gateway"
+	"ai-engine/provider/registry"
+	"ai-engine/session"
+	"ai-engine/tools"
 )
 
 func main() {
@@ -32,14 +36,17 @@ func main() {
 		log.Fatal("CF_TOKEN is invalid")
 	}
 
-	config.LoadConfig()
+	startConfigReloader(ctx)
 
+	server := &http.Server{
+		Addr:    "127.0.0.1:8787",
+		Handler: gateway.New(session.NewD1(), registry.New(), tools.Builtin()).Handler(),
+	}
 	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"ok":true}`))
-		})
-		_ = http.ListenAndServe("127.0.0.1:8787", mux)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http: %v", err)
+			stop()
+		}
 	}()
 
 	url, err := startTunnel(ctx)
@@ -54,6 +61,33 @@ func main() {
 	log.Print("tunnel url saved")
 
 	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+}
+
+func startConfigReloader(ctx context.Context) {
+	if err := config.LoadConfig(); err != nil {
+		log.Printf("config: %v", err)
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := config.LoadConfig(); err != nil {
+					log.Printf("config: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 var tunnelURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+\.trycloudflare\.com`)

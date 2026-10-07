@@ -68,6 +68,18 @@ func GetProvider(id string) (Provider, bool) {
 	return Provider{}, false
 }
 
+func GetProviderByName(name string) (Provider, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	for _, provider := range Providers {
+		if strings.EqualFold(provider.Name, name) {
+			return provider, true
+		}
+	}
+	return Provider{}, false
+}
+
 func providerFromRow(row map[string]any) (Provider, error) {
 	return Provider{
 		ID:      intString(row["index"]),

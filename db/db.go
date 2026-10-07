@@ -27,7 +27,7 @@ type Where map[string]any
 
 type apiResponse struct {
 	Success bool            `json:"success"`
-	Errors  []apiError     `json:"errors"`
+	Errors  []apiError      `json:"errors"`
 	Result  json.RawMessage `json:"result"`
 }
 
@@ -232,7 +232,7 @@ func Query(sql string, params ...any) ([]map[string]any, error) {
 		return nil, fmt.Errorf("db: Verify must succeed first")
 	}
 
-	body, err := json.Marshal([]queryRequest{{SQL: sql, Params: params}})
+	body, err := json.Marshal(queryRequest{SQL: sql, Params: params})
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,606 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"ai-engine/config"
+	"ai-engine/provider"
+	"ai-engine/session"
+)
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatRequest struct {
+	Model       string        `json:"model"`
+	Provider    string        `json:"provider"`
+	Messages    []chatMessage `json:"messages"`
+	SessionID   string        `json:"session_id"`
+	Stream      bool          `json:"stream"`
+	Temperature *float64      `json:"temperature"`
+	TopP        *float64      `json:"top_p"`
+	MaxTokens   int           `json:"max_tokens"`
+	Tools       *[]string     `json:"tools"`
+}
+
+type route struct {
+	adapter provider.Adapter
+	prov    provider.Provider
+	model   string
+}
+
+type completionOptions struct {
+	maxTokens   int
+	temperature *float64
+	topP        *float64
+	tools       []provider.ToolDef
+	stream      bool
+	emit        func(string) error
+}
+
+func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
+	var body chatRequest
+	if err := decodeBody(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if len(body.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "messages must not be empty")
+		return
+	}
+
+	var stored *session.Session
+	if body.SessionID != "" {
+		found, err := g.sessions.Get(body.SessionID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		stored = found
+	}
+
+	incoming := make([]provider.Message, 0, len(body.Messages))
+	for _, message := range body.Messages {
+		role := strings.TrimSpace(message.Role)
+		if role == "" {
+			role = "user"
+		}
+		incoming = append(incoming, provider.Message{Role: role, Content: message.Content})
+	}
+
+	history, delta := incoming, incoming
+	if stored != nil {
+		saved, err := g.sessions.History(stored.ID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "database_error", err.Error())
+			return
+		}
+		history, delta = mergeHistory(saved, incoming)
+	}
+
+	primary, err := g.resolveRoute(stored, body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	toolset, err := g.selectTools(body.Tools)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	options := completionOptions{
+		maxTokens:   firstNonZero(body.MaxTokens, storedMaxTokens(stored)),
+		temperature: firstNonZeroPtr(body.Temperature, storedTemperature(stored)),
+		topP:        firstNonZeroPtr(body.TopP, storedTopP(stored)),
+		tools:       toolset,
+		stream:      body.Stream,
+	}
+	fallback := g.fallbackRoute(stored)
+
+	if body.Stream {
+		g.chatStream(w, r, stored, primary, fallback, history, delta, options)
+		return
+	}
+	g.chatOnce(w, r, stored, primary, fallback, history, delta, options)
+}
+
+func (g *Gateway) chatOnce(w http.ResponseWriter, r *http.Request, stored *session.Session, primary route, fallback *route, history, delta []provider.Message, options completionOptions) {
+	started := time.Now()
+	resp, err := g.complete(r.Context(), primary, fallback, history, options)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	duration := time.Since(started).Milliseconds()
+	g.persist(stored, delta, resp, options, duration)
+
+	id := resp.ID
+	if id == "" {
+		id = newCompletionID()
+	}
+	finish := resp.FinishReason
+	if finish == "" {
+		finish = "stop"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":       id,
+		"object":   "chat.completion",
+		"created":  time.Now().Unix(),
+		"model":    resp.Model,
+		"provider": resp.Provider,
+		"choices": []map[string]any{
+			{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": resp.Content},
+				"finish_reason": finish,
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     resp.Usage.PromptTokens,
+			"completion_tokens": resp.Usage.CompletionTokens,
+			"total_tokens":      resp.Usage.TotalTokens,
+		},
+	})
+}
+
+func (g *Gateway) chatStream(w http.ResponseWriter, r *http.Request, stored *session.Session, primary route, fallback *route, history, delta []provider.Message, options completionOptions) {
+	flusher, _ := w.(http.Flusher)
+	created := time.Now().Unix()
+	id := newCompletionID()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	modelID := primary.model
+	var buffered strings.Builder
+	first := true
+	options.emit = func(text string) error {
+		buffered.WriteString(text)
+		chunk := map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelID,
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"delta":         streamDelta(first, text),
+					"finish_reason": nil,
+				},
+			},
+		}
+		first = false
+		return writeSSE(w, flusher, chunk)
+	}
+
+	started := time.Now()
+	resp, err := g.complete(r.Context(), primary, fallback, history, options)
+	if err != nil {
+		payload := map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}}
+		_ = writeSSE(w, flusher, payload)
+		writeSSEDone(w, flusher)
+		return
+	}
+	duration := time.Since(started).Milliseconds()
+	g.persist(stored, delta, resp, options, duration)
+
+	finish := resp.FinishReason
+	if finish == "" {
+		finish = "stop"
+	}
+	final := map[string]any{
+		"id":       id,
+		"object":   "chat.completion.chunk",
+		"created":  created,
+		"model":    resp.Model,
+		"provider": resp.Provider,
+		"choices": []map[string]any{
+			{
+				"index":         0,
+				"delta":         map[string]any{},
+				"finish_reason": finish,
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     resp.Usage.PromptTokens,
+			"completion_tokens": resp.Usage.CompletionTokens,
+			"total_tokens":      resp.Usage.TotalTokens,
+		},
+	}
+	_ = writeSSE(w, flusher, final)
+	writeSSEDone(w, flusher)
+}
+
+func streamDelta(withRole bool, text string) map[string]any {
+	delta := map[string]any{"content": text}
+	if withRole {
+		delta["role"] = "assistant"
+	}
+	return delta
+}
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, payload any) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", encoded); err != nil {
+		return err
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func writeSSEDone(w http.ResponseWriter, flusher http.Flusher) {
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+func (g *Gateway) resolveRoute(stored *session.Session, body chatRequest) (route, error) {
+	providerName := body.Provider
+	modelID := body.Model
+	if stored != nil {
+		if providerName == "" {
+			providerName = stored.Provider
+		}
+		if modelID == "" {
+			modelID = stored.Model
+		}
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return route{}, fmt.Errorf("model is required (use provider/model or the provider field)")
+	}
+
+	adapterFor := func(cfg config.Provider) (provider.Adapter, error) {
+		return g.registry.Require(cfg.Adapter)
+	}
+
+	if providerName != "" {
+		cfg, ok := config.GetProviderByName(providerName)
+		if !ok {
+			return route{}, fmt.Errorf("unknown provider %q (known: %s)", providerName, providerNames())
+		}
+		implementation, err := adapterFor(cfg)
+		if err != nil {
+			return route{}, err
+		}
+		model := trimProviderPrefix(modelID, cfg.Name)
+		if model == "" {
+			return route{}, fmt.Errorf("model is required for provider %q", cfg.Name)
+		}
+		return route{adapter: implementation, prov: toInternalProvider(cfg), model: model}, nil
+	}
+
+	if prefix, rest, found := strings.Cut(modelID, "/"); found {
+		if cfg, ok := config.GetProviderByName(prefix); ok {
+			implementation, err := adapterFor(cfg)
+			if err != nil {
+				return route{}, err
+			}
+			return route{adapter: implementation, prov: toInternalProvider(cfg), model: rest}, nil
+		}
+	}
+	return route{}, fmt.Errorf("unknown model %q: prefix it with a provider, for example provider/%s (known: %s)", modelID, modelID, providerNames())
+}
+
+func (g *Gateway) fallbackRoute(stored *session.Session) *route {
+	if stored == nil || !stored.SubEnabled || stored.SubProvider == "" || stored.SubModel == "" {
+		return nil
+	}
+	cfg, ok := config.GetProviderByName(stored.SubProvider)
+	if !ok {
+		return nil
+	}
+	implementation, err := g.registry.Require(cfg.Adapter)
+	if err != nil {
+		return nil
+	}
+	return &route{adapter: implementation, prov: toInternalProvider(cfg), model: stored.SubModel}
+}
+
+func (g *Gateway) complete(ctx context.Context, primary route, fallback *route, history []provider.Message, options completionOptions) (*provider.Response, error) {
+	conversation := append([]provider.Message(nil), history...)
+	current := primary
+	usedFallback := false
+
+	emitted := 0
+	emit := options.emit
+	if emit != nil {
+		emit = func(text string) error {
+			emitted++
+			return options.emit(text)
+		}
+	}
+	canRetry := func() bool { return !options.stream || emitted == 0 }
+
+	final := &provider.Response{}
+	var served string
+
+	for round := 0; round < maxToolRounds; {
+		request := &provider.Request{
+			Model:       current.model,
+			Messages:    session.Trim(conversation, session.DefaultMaxTokens),
+			MaxTokens:   options.maxTokens,
+			Temperature: options.temperature,
+			TopP:        options.topP,
+			Stream:      options.stream,
+			Tools:       options.tools,
+		}
+
+		resp, err := g.call(ctx, current, request, emit, canRetry)
+		if err != nil {
+			if fallback != nil && !usedFallback && canRetry() {
+				current = *fallback
+				usedFallback = true
+				continue
+			}
+			return nil, err
+		}
+		round++
+		if served == "" {
+			served = current.prov.Name
+		}
+
+		final.ID = resp.ID
+		final.Model = current.model
+		final.Provider = served
+		final.Content += resp.Content
+		final.Usage.PromptTokens += resp.Usage.PromptTokens
+		final.Usage.CompletionTokens += resp.Usage.CompletionTokens
+		final.Usage.TotalTokens += resp.Usage.TotalTokens
+		final.FinishReason = resp.FinishReason
+
+		if len(resp.ToolCalls) == 0 {
+			break
+		}
+
+		conversation = append(conversation, provider.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+		for _, call := range resp.ToolCalls {
+			conversation = append(conversation, provider.Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Content:    g.runTool(ctx, call),
+			})
+		}
+		final.FinishReason = "tool_calls"
+	}
+	return final, nil
+}
+
+func (g *Gateway) call(ctx context.Context, target route, request *provider.Request, emit func(string) error, canRetry func() bool) (*provider.Response, error) {
+	if len(target.prov.Keys) == 0 {
+		return nil, fmt.Errorf("provider %s has no API keys", target.prov.Name)
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, upstreamWait)
+	defer cancel()
+
+	start := g.nextKey(target.prov.Name)
+
+	var lastErr error
+	for attempt := 0; attempt < keyAttempts; attempt++ {
+		if attempt > 0 && !canRetry() {
+			break
+		}
+		if attempt > 0 {
+			select {
+			case <-callCtx.Done():
+				return nil, callCtx.Err()
+			case <-time.After(time.Duration(attempt) * 750 * time.Millisecond):
+			}
+		}
+		key := target.prov.Keys[(start+attempt)%len(target.prov.Keys)]
+		var (
+			resp *provider.Response
+			err  error
+		)
+		if request.Stream {
+			resp, err = target.adapter.Stream(callCtx, request, target.prov, key, emit)
+		} else {
+			resp, err = target.adapter.Complete(callCtx, request, target.prov, key)
+		}
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !provider.Retryable(err) || callCtx.Err() != nil {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func (g *Gateway) runTool(ctx context.Context, call provider.ToolCall) string {
+	tool, ok := g.tools[call.Name]
+	if !ok {
+		return toolError(fmt.Sprintf("unknown tool %q", call.Name))
+	}
+	result, err := tool.Run(ctx, call.Arguments)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return truncate(result, 32*1024)
+}
+
+func toolError(message string) string {
+	encoded, err := json.Marshal(map[string]string{"error": message})
+	if err != nil {
+		return `{"error":"tool failed"}`
+	}
+	return string(encoded)
+}
+
+func (g *Gateway) selectTools(names *[]string) ([]provider.ToolDef, error) {
+	if names == nil {
+		all := make([]provider.ToolDef, 0, len(g.tools))
+		for _, tool := range g.tools {
+			all = append(all, tool.Def)
+		}
+		return all, nil
+	}
+
+	selected := make([]provider.ToolDef, 0, len(*names))
+	for _, name := range *names {
+		tool, ok := g.tools[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown tool %q", name)
+		}
+		selected = append(selected, tool.Def)
+	}
+	return selected, nil
+}
+
+func (g *Gateway) persist(stored *session.Session, delta []provider.Message, resp *provider.Response, options completionOptions, duration int64) {
+	if stored == nil {
+		return
+	}
+
+	turns := make([]session.TurnInput, 0, len(delta)+1)
+	title := ""
+	for _, message := range delta {
+		if message.Role != "user" && message.Role != "system" && message.Role != "assistant" {
+			continue
+		}
+		turns = append(turns, session.TurnInput{Role: message.Role, Text: message.Content})
+		if title == "" && message.Role == "user" && strings.TrimSpace(message.Content) != "" {
+			title = truncate(strings.TrimSpace(message.Content), 60)
+		}
+	}
+	turns = append(turns, session.TurnInput{
+		Role:         "assistant",
+		Text:         resp.Content,
+		Model:        resp.Model,
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+		DurationMS:   duration,
+	})
+
+	if err := g.sessions.AppendTurns(stored.ID, turns); err != nil {
+		log.Printf("gateway: save turns: %v", err)
+	}
+
+	saved := session.Session{Provider: resp.Provider, Model: resp.Model}
+	if stored.Title == "" {
+		saved.Title = title
+	}
+	if err := g.sessions.SaveConfig(stored.ID, saved); err != nil {
+		log.Printf("gateway: save session config: %v", err)
+	}
+}
+
+func mergeHistory(stored, incoming []provider.Message) (full, delta []provider.Message) {
+	common := 0
+	for common < len(stored) && common < len(incoming) {
+		if stored[common].Role != incoming[common].Role || stored[common].Content != incoming[common].Content {
+			break
+		}
+		common++
+	}
+
+	switch {
+	case common == len(stored):
+		full = append(append([]provider.Message(nil), stored...), incoming[common:]...)
+		return full, incoming[common:]
+	case common == len(incoming):
+		return stored, nil
+	default:
+		full = append(append([]provider.Message(nil), stored...), incoming...)
+		return full, incoming
+	}
+}
+
+func toInternalProvider(cfg config.Provider) provider.Provider {
+	return provider.Provider{
+		Name:     cfg.Name,
+		Endpoint: cfg.APIURL,
+		Keys:     cfg.Keys,
+		Adapter:  cfg.Adapter,
+		Free:     cfg.Free,
+	}
+}
+
+func trimProviderPrefix(model, provider string) string {
+	if len(model) > len(provider)+1 && strings.EqualFold(model[:len(provider)+1], provider+"/") {
+		return model[len(provider)+1:]
+	}
+	return model
+}
+
+func providerNames() string {
+	providers := config.GetProviders()
+	names := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		names = append(names, provider.Name)
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
+func storedMaxTokens(stored *session.Session) int {
+	if stored == nil {
+		return 0
+	}
+	return stored.MaxTokens
+}
+
+func storedTemperature(stored *session.Session) *float64 {
+	if stored == nil {
+		return nil
+	}
+	return stored.Temperature
+}
+
+func storedTopP(stored *session.Session) *float64 {
+	if stored == nil {
+		return nil
+	}
+	return stored.TopP
+}
+
+func firstNonZero(value, fallback int) int {
+	if value != 0 {
+		return value
+	}
+	return fallback
+}
+
+func firstNonZeroPtr(value, fallback *float64) *float64 {
+	if value != nil {
+		return value
+	}
+	return fallback
+}
+
+func writeUpstreamError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	errType := "upstream_error"
+	if api, ok := err.(*provider.APIError); ok {
+		writeError(w, status, errType, api.Error())
+		return
+	}
+	writeError(w, status, errType, err.Error())
+}
