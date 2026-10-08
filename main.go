@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,6 +21,7 @@ import (
 	"ai-engine/config"
 	"ai-engine/db"
 	"ai-engine/io/gateway"
+	"ai-engine/io/mobile"
 	"ai-engine/provider/registry"
 	"ai-engine/session"
 	"ai-engine/tools"
@@ -38,9 +42,17 @@ func main() {
 
 	startConfigReloader(ctx)
 
+	gw := gateway.New(session.NewD1(), registry.New(), tools.Builtin()).Handler()
+	model := strings.TrimSpace(os.Getenv("AIXODIA_MODEL"))
+	if model == "" {
+		model = "Opencode/big-pickle"
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ws", mobile.Handler(token, chatViaGateway(gw, model)))
+	mux.Handle("/", gw)
 	server := &http.Server{
 		Addr:    "127.0.0.1:8787",
-		Handler: gateway.New(session.NewD1(), registry.New(), tools.Builtin()).Handler(),
+		Handler: mux,
 	}
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -59,6 +71,7 @@ func main() {
 		log.Fatalf("save tunnel: %v", err)
 	}
 	log.Print("tunnel url saved")
+	go startHeartbeat(ctx, url)
 
 	<-ctx.Done()
 
@@ -138,5 +151,70 @@ func startTunnel(ctx context.Context) (string, error) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return "", ctx.Err()
+	}
+}
+
+// chatViaGateway answers one message by calling the HTTP chat route in-process,
+// so the WebSocket path shares routing, history, and persistence with the API.
+func chatViaGateway(h http.Handler, model string) mobile.ChatFunc {
+	return func(sessionID, text string) (string, int, int, error) {
+		body, err := json.Marshal(map[string]any{
+			"session_id": sessionID,
+			"model":      model,
+			"messages":   []map[string]string{{"role": "user", "content": text}},
+		})
+		if err != nil {
+			return "", 0, 0, err
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return "", 0, 0, fmt.Errorf("chat %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+		var out struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			return "", 0, 0, err
+		}
+		if len(out.Choices) == 0 {
+			return "", 0, 0, fmt.Errorf("chat: empty choices")
+		}
+		return out.Choices[0].Message.Content, out.Usage.PromptTokens, out.Usage.CompletionTokens, nil
+	}
+}
+
+// startHeartbeat keeps the single `nodes` row ('ai') current so the app can
+// find this daemon: tunnel URL and a heartbeat every 30 seconds.
+func startHeartbeat(ctx context.Context, url string) {
+	beat := func() {
+		_, err := db.Query(
+			"INSERT INTO nodes (id, tunnel_url, version, heartbeat) VALUES ('ai', ?, ?, ?) "+
+				"ON CONFLICT(id) DO UPDATE SET tunnel_url = excluded.tunnel_url, version = excluded.version, heartbeat = excluded.heartbeat",
+			url, "ai-engine/1.0", time.Now().Unix())
+		if err != nil {
+			log.Printf("heartbeat: %v", err)
+		}
+	}
+	beat()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			beat()
+		}
 	}
 }
