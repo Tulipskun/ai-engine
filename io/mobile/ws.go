@@ -177,18 +177,20 @@ func handle(p *peer, in inFrame, chat ChatFunc) {
 			_ = p.send(outFrame{Kind: "error", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: "ข้อความว่าง"})
 			return
 		}
-		go p.answer(in, text, chat)
+		// Register the cancel func before answering, so a cancel frame that
+		// arrives right behind this message always finds it.
+		ctx, cancel := context.WithCancel(context.Background())
+		key := in.ClientMsgID
+		if key == "" {
+			key = in.SessionID
+		}
+		p.register(key, cancel)
+		go p.answer(ctx, cancel, key, in, text, chat)
 	}
 }
 
-func (p *peer) answer(in inFrame, text string, chat ChatFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (p *peer) answer(ctx context.Context, cancel context.CancelFunc, key string, in inFrame, text string, chat ChatFunc) {
 	defer cancel()
-	key := in.ClientMsgID
-	if key == "" {
-		key = in.SessionID
-	}
-	p.register(key, cancel)
 	defer p.unregister(key)
 
 	onDelta := func(piece string) {
