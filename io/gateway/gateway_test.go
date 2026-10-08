@@ -505,3 +505,12 @@ func TestToolRoundLimitStillGivesAnAnswer(t *testing.T) {
 		t.Errorf("reply had no answer after the tool limit: %s", recorder.Body.String())
 	}
 }
+
+func TestRejectsInvalidUTF8Body(t *testing.T) {
+	gateway, _ := newTestGateway(t, newMemStore())
+	bad := "{\"model\":\"mock/test-model\",\"messages\":[{\"role\":\"user\",\"content\":\"\xe0\xb8\"}]}"
+	recorder := postJSON(t, gateway.Handler(), "/v1/chat/completions", bad)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for invalid UTF-8", recorder.Code)
+	}
+}

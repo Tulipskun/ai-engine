@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ai-engine/config"
 	"ai-engine/provider"
@@ -185,8 +186,17 @@ func (g *Gateway) nextKey(name string) int {
 
 func decodeBody(r *http.Request, target any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, requestMaxBody))
-	if err := decoder.Decode(target); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, requestMaxBody))
+	if err != nil {
+		return fmt.Errorf("cannot read body: %w", err)
+	}
+	// encoding/json silently replaces invalid bytes with U+FFFD, so a Thai
+	// message sent in the wrong encoding would be saved as a row of "�".
+	// Refuse it instead so the sender can see the problem.
+	if !utf8.Valid(raw) {
+		return fmt.Errorf("request body is not valid UTF-8; send the message as UTF-8 text")
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
 		return fmt.Errorf("cannot decode JSON body: %w", err)
 	}
 	return nil
