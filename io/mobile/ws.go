@@ -5,6 +5,7 @@ package mobile
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/base64"
@@ -23,9 +24,10 @@ import (
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 const maxFrame = 1 << 20
 
-// ChatFunc answers one user message in a session and returns the reply text
-// plus token counts.
-type ChatFunc func(sessionID, text string) (reply string, inTokens, outTokens int, err error)
+// ChatFunc answers one user message in a session, calling onDelta for each
+// streamed piece, and returns the full reply plus token counts. It must stop
+// when ctx is cancelled.
+type ChatFunc func(ctx context.Context, sessionID, text string, onDelta func(string)) (reply string, inTokens, outTokens int, err error)
 
 type inFrame struct {
 	Type      string `json:"type"`
@@ -87,9 +89,10 @@ func Handler(token string, chat ChatFunc) http.Handler {
 }
 
 type peer struct {
-	conn net.Conn
-	mu   sync.Mutex
-	seq  int64
+	conn    net.Conn
+	mu      sync.Mutex
+	seq     int64
+	cancels map[string]context.CancelFunc
 }
 
 func (p *peer) send(f outFrame) error {
@@ -104,7 +107,8 @@ func (p *peer) send(f outFrame) error {
 }
 
 func serve(conn net.Conn, r *bufio.Reader, chat ChatFunc) {
-	p := &peer{conn: conn}
+	p := &peer{conn: conn, cancels: map[string]context.CancelFunc{}}
+	defer p.cancelAll()
 	for {
 		op, payload, err := readFrame(r)
 		if err != nil {
@@ -131,12 +135,35 @@ func serve(conn net.Conn, r *bufio.Reader, chat ChatFunc) {
 	}
 }
 
+func (p *peer) register(id string, cancel context.CancelFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cancels[id] = cancel
+}
+
+func (p *peer) unregister(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.cancels, id)
+}
+
+func (p *peer) cancelAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id, cancel := range p.cancels {
+		cancel()
+		delete(p.cancels, id)
+	}
+}
+
+// handle answers hello and cancel inline; a message runs in its own goroutine
+// so a cancel frame can arrive while the reply is still streaming.
 func handle(p *peer, in inFrame, chat ChatFunc) {
 	switch in.Type {
 	case "hello":
 		_ = p.send(outFrame{Kind: "ack", SessionID: in.SessionID})
 	case "cancel":
-		_ = p.send(outFrame{Kind: "done", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID})
+		p.cancelAll()
 	case "message", "":
 		var parts []string
 		for _, c := range in.Content {
@@ -150,20 +177,40 @@ func handle(p *peer, in inFrame, chat ChatFunc) {
 			_ = p.send(outFrame{Kind: "error", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: "ข้อความว่าง"})
 			return
 		}
-		reply, inTok, outTok, err := chat(in.SessionID, text)
-		if err != nil {
-			log.Printf("mobile: chat: %v", err)
-			_ = p.send(outFrame{Kind: "error", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: err.Error()})
-			return
-		}
-		p.mu.Lock()
-		p.seq++
-		seq := p.seq
-		p.mu.Unlock()
-		_ = p.send(outFrame{Kind: "message", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID,
-			Text: reply, Role: "model", Agent: "main", Seq: seq, InputTokens: inTok, OutputTokens: outTok})
-		_ = p.send(outFrame{Kind: "done", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Seq: seq})
+		go p.answer(in, text, chat)
 	}
+}
+
+func (p *peer) answer(in inFrame, text string, chat ChatFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	key := in.ClientMsgID
+	if key == "" {
+		key = in.SessionID
+	}
+	p.register(key, cancel)
+	defer p.unregister(key)
+
+	onDelta := func(piece string) {
+		_ = p.send(outFrame{Kind: "delta", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: piece, Role: "model", Agent: "main"})
+	}
+	reply, inTok, outTok, err := chat(ctx, in.SessionID, text, onDelta)
+	if ctx.Err() != nil {
+		_ = p.send(outFrame{Kind: "done", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: "cancelled"})
+		return
+	}
+	if err != nil {
+		log.Printf("mobile: chat: %v", err)
+		_ = p.send(outFrame{Kind: "error", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: err.Error()})
+		return
+	}
+	p.mu.Lock()
+	p.seq++
+	seq := p.seq
+	p.mu.Unlock()
+	_ = p.send(outFrame{Kind: "message", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID,
+		Text: reply, Role: "model", Agent: "main", Seq: seq, InputTokens: inTok, OutputTokens: outTok})
+	_ = p.send(outFrame{Kind: "done", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Seq: seq})
 }
 
 func readFrame(r *bufio.Reader) (byte, []byte, error) {

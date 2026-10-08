@@ -67,11 +67,15 @@ func main() {
 	}
 	log.Printf("tunnel url: %s", url)
 
-	if err := db.SaveTunnel(url); err != nil {
-		log.Fatalf("save tunnel: %v", err)
+	if os.Getenv("AIXODIA_PUBLISH") == "0" {
+		log.Printf("local test mode: tunnel not published to D1")
+	} else {
+		if err := db.SaveTunnel(url); err != nil {
+			log.Fatalf("save tunnel: %v", err)
+		}
+		log.Print("tunnel url saved")
+		go startHeartbeat(ctx, url)
 	}
-	log.Print("tunnel url saved")
-	go startHeartbeat(ctx, url)
 
 	<-ctx.Done()
 
@@ -154,44 +158,105 @@ func startTunnel(ctx context.Context) (string, error) {
 	}
 }
 
-// chatViaGateway answers one message by calling the HTTP chat route in-process,
-// so the WebSocket path shares routing, history, and persistence with the API.
+// chatViaGateway answers one message by calling the HTTP chat route in-process
+// with stream=true, so the WebSocket path shares routing, history, and
+// persistence with the API. Each SSE delta is forwarded through onDelta.
 func chatViaGateway(h http.Handler, model string) mobile.ChatFunc {
-	return func(sessionID, text string) (string, int, int, error) {
+	return func(ctx context.Context, sessionID, text string, onDelta func(string)) (string, int, int, error) {
 		body, err := json.Marshal(map[string]any{
 			"session_id": sessionID,
 			"model":      model,
+			"stream":     true,
 			"messages":   []map[string]string{{"role": "user", "content": text}},
 		})
 		if err != nil {
 			return "", 0, 0, err
 		}
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body)).WithContext(ctx)
 		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			return "", 0, 0, fmt.Errorf("chat %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+
+		var full strings.Builder
+		var inTok, outTok int
+		var streamErr string
+		sw := &sseWriter{header: http.Header{}, status: http.StatusOK}
+		sw.onEvent = func(data []byte) {
+			if bytes.Equal(data, []byte("[DONE]")) {
+				return
+			}
+			var ev struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+				Usage *struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+				} `json:"usage"`
+				Error *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(data, &ev); err != nil {
+				return
+			}
+			if ev.Error != nil {
+				streamErr = ev.Error.Message
+				return
+			}
+			if ev.Usage != nil {
+				inTok, outTok = ev.Usage.PromptTokens, ev.Usage.CompletionTokens
+			}
+			for _, c := range ev.Choices {
+				if c.Delta.Content != "" {
+					full.WriteString(c.Delta.Content)
+					onDelta(c.Delta.Content)
+				}
+			}
 		}
-		var out struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usage"`
+		h.ServeHTTP(sw, req)
+		if sw.status != http.StatusOK {
+			return "", 0, 0, fmt.Errorf("chat %d: %s", sw.status, strings.TrimSpace(sw.raw.String()))
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			return "", 0, 0, err
+		if streamErr != "" {
+			return "", 0, 0, fmt.Errorf("chat: %s", streamErr)
 		}
-		if len(out.Choices) == 0 {
-			return "", 0, 0, fmt.Errorf("chat: empty choices")
-		}
-		return out.Choices[0].Message.Content, out.Usage.PromptTokens, out.Usage.CompletionTokens, nil
+		return full.String(), inTok, outTok, nil
 	}
+}
+
+// sseWriter is a minimal in-process http.ResponseWriter that splits the SSE
+// body into events as they are written and keeps the raw body for errors.
+type sseWriter struct {
+	header  http.Header
+	status  int
+	raw     bytes.Buffer
+	pending bytes.Buffer
+	onEvent func([]byte)
+}
+
+func (w *sseWriter) Header() http.Header { return w.header }
+
+func (w *sseWriter) WriteHeader(code int) { w.status = code }
+
+func (w *sseWriter) Flush() {}
+
+func (w *sseWriter) Write(p []byte) (int, error) {
+	w.raw.Write(p)
+	w.pending.Write(p)
+	for {
+		buf := w.pending.Bytes()
+		idx := bytes.Index(buf, []byte("\n\n"))
+		if idx < 0 {
+			break
+		}
+		event := append([]byte(nil), buf[:idx]...)
+		w.pending.Next(idx + 2)
+		if bytes.HasPrefix(event, []byte("data: ")) && w.onEvent != nil {
+			w.onEvent(event[6:])
+		}
+	}
+	return len(p), nil
 }
 
 // startHeartbeat keeps the single `nodes` row ('ai') current so the app can

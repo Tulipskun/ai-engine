@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -14,7 +15,9 @@ import (
 	"testing"
 )
 
-func fakeChat(sessionID, text string) (string, int, int, error) {
+func fakeChat(ctx context.Context, sessionID, text string, onDelta func(string)) (string, int, int, error) {
+	onDelta("echo: ")
+	onDelta(text)
 	return "echo: " + text, 3, 4, nil
 }
 
@@ -79,7 +82,7 @@ func TestMessageRoundTrip(t *testing.T) {
 
 	var kinds []string
 	var msg outFrame
-	for len(kinds) < 4 {
+	for len(kinds) < 6 {
 		op, payload, err := readFrame(r)
 		if err != nil {
 			if err == io.EOF {
@@ -99,7 +102,7 @@ func TestMessageRoundTrip(t *testing.T) {
 			msg = f
 		}
 	}
-	want := []string{"ack", "ack", "message", "done"}
+	want := []string{"ack", "ack", "delta", "delta", "message", "done"}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Fatalf("frames %v, want %v", kinds, want)
 	}
