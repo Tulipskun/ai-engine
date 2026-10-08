@@ -235,12 +235,32 @@ func (g *Gateway) apiChangeKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, providerStatusJSON(updated, probeResult{}))
 }
 
-func (g *Gateway) apiRefreshProviders(w http.ResponseWriter, r *http.Request) {
-	list := []map[string]any{}
-	for _, cfg := range config.GetProviders() {
-		probe := g.probeProvider(cfg)
-		list = append(list, providerStatusJSON(cfg, probe))
+// probeLimit caps how many upstreams are asked at once. With a hundred
+// providers a sequential refresh would wait on each timeout in turn.
+const probeLimit = 8
+
+// forEachBounded runs fn for every item with at most limit calls in flight.
+func forEachBounded[T any](items []T, limit int, fn func(int, T)) {
+	var wait sync.WaitGroup
+	slots := make(chan struct{}, limit)
+	for i, item := range items {
+		wait.Add(1)
+		slots <- struct{}{}
+		go func(i int, item T) {
+			defer wait.Done()
+			defer func() { <-slots }()
+			fn(i, item)
+		}(i, item)
 	}
+	wait.Wait()
+}
+
+func (g *Gateway) apiRefreshProviders(w http.ResponseWriter, r *http.Request) {
+	providers := config.GetProviders()
+	list := make([]map[string]any, len(providers))
+	forEachBounded(providers, probeLimit, func(i int, cfg config.Provider) {
+		list[i] = providerStatusJSON(cfg, g.probeProvider(cfg))
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"providers": list})
 }
 
@@ -288,30 +308,26 @@ func (g *Gateway) apiModels(w http.ResponseWriter, r *http.Request) {
 
 	providers := config.GetProviders()
 	views := make([]providerView, len(providers))
-	var wait sync.WaitGroup
-	for i, cfg := range providers {
-		wait.Add(1)
-		go func(i int, cfg config.Provider) {
-			defer wait.Done()
-			view := providerView{ID: cfg.Name, Name: cfg.Name, Models: []modelView{}}
-			ids, err := fetchModels(cfg)
-			if err == nil {
-				for _, id := range ids {
-					view.Models = append(view.Models, modelView{
-						ID:                id,
-						Name:              id,
-						SupportsStreaming: true,
-						SupportsTools:     cfg.Adapter == "openai" || cfg.Adapter == "opencode" || cfg.Adapter == "anthropic",
-					})
-				}
-				if len(ids) > 0 {
-					view.DefaultModel = ids[0]
-				}
+	// providerModels caches each upstream's list for a minute, so opening the
+	// model picker does not ask all hundred providers again.
+	forEachBounded(providers, probeLimit, func(i int, cfg config.Provider) {
+		view := providerView{ID: cfg.Name, Name: cfg.Name, Models: []modelView{}}
+		ids, err := g.providerModels(cfg)
+		if err == nil {
+			for _, id := range ids {
+				view.Models = append(view.Models, modelView{
+					ID:                id,
+					Name:              id,
+					SupportsStreaming: true,
+					SupportsTools:     cfg.Adapter == "openai" || cfg.Adapter == "opencode" || cfg.Adapter == "anthropic",
+				})
 			}
-			views[i] = view
-		}(i, cfg)
-	}
-	wait.Wait()
+			if len(ids) > 0 {
+				view.DefaultModel = ids[0]
+			}
+		}
+		views[i] = view
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"providers": views})
 }
 

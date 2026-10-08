@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"ai-engine/config"
 )
@@ -103,5 +105,30 @@ func TestListProvidersShowsEveryProviderWithProbeState(t *testing.T) {
 	}
 	if !payload.Providers[1].Reachable || payload.Providers[1].ModelCount != 3 || !payload.Providers[1].FreeOnly {
 		t.Errorf("beta = %+v", payload.Providers[1])
+	}
+}
+
+func TestForEachBoundedNeverExceedsLimit(t *testing.T) {
+	items := make([]int, 100)
+	var mu sync.Mutex
+	inFlight, peak, done := 0, 0, 0
+	forEachBounded(items, 8, func(_ int, _ int) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		mu.Lock()
+		inFlight--
+		done++
+		mu.Unlock()
+	})
+	if done != 100 {
+		t.Errorf("done = %d, want 100", done)
+	}
+	if peak > 8 {
+		t.Errorf("peak concurrency = %d, want <= 8", peak)
 	}
 }
