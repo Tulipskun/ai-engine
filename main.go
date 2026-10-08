@@ -59,7 +59,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/ws", mobile.Handler(token, chatViaGateway(gw, model)))
-	mux.Handle("/", gw)
+	mux.Handle("/", gateway.RequireToken(token, gw))
 	server := &http.Server{
 		Addr:    "127.0.0.1:8787",
 		Handler: mux,

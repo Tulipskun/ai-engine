@@ -44,6 +44,7 @@ type Gateway struct {
 	modelList map[string]modelCache
 	brMu      sync.Mutex
 	breakers  map[string]*breaker
+	probes    *probeCache
 }
 
 type modelCache struct {
@@ -59,6 +60,7 @@ func New(sessions SessionStore, reg *registry.Registry, toolset map[string]tools
 		keyIndex:  map[string]int{},
 		modelList: map[string]modelCache{},
 		breakers:  map[string]*breaker{},
+		probes:    newProbeCache(),
 	}
 }
 
@@ -75,6 +77,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sessions/{id}", g.deleteSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/turns", g.getSessionTurns)
 	mux.HandleFunc("POST /v1/chat/completions", g.chat)
+	g.registerAPI(mux)
 	return mux
 }
 
