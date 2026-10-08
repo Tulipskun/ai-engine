@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ai-engine/config"
 	"ai-engine/provider"
@@ -99,13 +100,7 @@ func (m *memStore) History(id string) ([]provider.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	messages := make([]provider.Message, 0, len(turns))
-	for _, turn := range turns {
-		if turn.Role == "system" || turn.Role == "user" || turn.Role == "assistant" {
-			messages = append(messages, provider.Message{Role: turn.Role, Content: turn.Text})
-		}
-	}
-	return messages, nil
+	return session.MessagesFromTurns(turns), nil
 }
 
 func (m *memStore) AppendTurns(id string, turns []session.TurnInput) error {
@@ -334,14 +329,20 @@ func TestChatWithSessionPersistsTurns(t *testing.T) {
 	}
 
 	turns, _ := store.Turns("s1")
-	if len(turns) != 2 {
-		t.Fatalf("turns = %d, want 2 (user + assistant)", len(turns))
+	if len(turns) != 4 {
+		t.Fatalf("turns = %d, want 4 (user, tool_call, tool_result, assistant)", len(turns))
 	}
 	if turns[0].Role != "user" || turns[0].Text != "hello" {
 		t.Errorf("first turn = %+v", turns[0])
 	}
-	if turns[1].Role != "assistant" || turns[1].Text != "done" {
-		t.Errorf("second turn = %+v", turns[1])
+	if turns[1].Role != "tool_call" || !strings.Contains(turns[1].Text, "current_time") {
+		t.Errorf("tool call turn = %+v", turns[1])
+	}
+	if turns[2].Role != "tool_result" {
+		t.Errorf("tool result turn = %+v", turns[2])
+	}
+	if turns[3].Role != "assistant" || turns[3].Text != "done" {
+		t.Errorf("last turn = %+v", turns[3])
 	}
 	if store.sessions["s1"].Model != "test-model" {
 		t.Errorf("session model = %q, want test-model", store.sessions["s1"].Model)
@@ -365,5 +366,97 @@ func TestMergeHistoryAppendsOnlyNewMessages(t *testing.T) {
 	}
 	if len(delta) != 1 || delta[0].Content != "three" {
 		t.Errorf("delta = %+v, want only the new message", delta)
+	}
+}
+
+func TestToolStepsReplayOnNextTurn(t *testing.T) {
+	store := newMemStore()
+	gateway, _ := newTestGateway(t, store)
+	postJSON(t, gateway.Handler(), "/v1/sessions", `{"title":"t","model":"mock/test-model"}`)
+
+	postJSON(t, gateway.Handler(), "/v1/chat/completions",
+		`{"session_id":"s1","messages":[{"role":"user","content":"hello"}]}`)
+	// The client only knows visible text, so it sends the answer back without tool steps.
+	recorder := postJSON(t, gateway.Handler(), "/v1/chat/completions",
+		`{"session_id":"s1","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"done"},{"role":"user","content":"again"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	turns, _ := store.Turns("s1")
+	if len(turns) != 6 {
+		t.Fatalf("turns = %d, want 6 (second turn adds only user + assistant)", len(turns))
+	}
+
+	history, _ := store.History("s1")
+	var sawToolCall, sawToolResult bool
+	for _, message := range history {
+		if len(message.ToolCalls) > 0 {
+			sawToolCall = true
+		}
+		if message.Role == "tool" && message.ToolCallID == "call_1" {
+			sawToolResult = true
+		}
+	}
+	if !sawToolCall || !sawToolResult {
+		t.Errorf("history lost tool steps: %+v", history)
+	}
+}
+
+func TestMergeHistoryKeepsToolStepsBetweenVisibleMessages(t *testing.T) {
+	stored := []provider.Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "c", Name: "current_time", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c", Content: "10:00"},
+		{Role: "assistant", Content: "it is 10:00"},
+	}
+	incoming := []provider.Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", Content: "it is 10:00"},
+		{Role: "user", Content: "thanks"},
+	}
+
+	full, delta := mergeHistory(stored, incoming)
+	if len(full) != 5 {
+		t.Fatalf("full = %d messages, want 5 (stored steps kept)", len(full))
+	}
+	if len(delta) != 1 || delta[0].Content != "thanks" {
+		t.Errorf("delta = %+v", delta)
+	}
+}
+
+func TestCircuitBreakerPausesThenRecovers(t *testing.T) {
+	gateway := New(newMemStore(), registry.New(), tools.Builtin())
+	now := time.Now()
+	outage := &provider.APIError{StatusCode: http.StatusServiceUnavailable, Message: "down"}
+
+	for i := 0; i < breakerThreshold; i++ {
+		gateway.recordOutcome("mock", outage, now)
+	}
+	if !gateway.circuitOpen("mock", now.Add(time.Second)) {
+		t.Fatal("breaker should be open after repeated outages")
+	}
+	if gateway.circuitOpen("mock", now.Add(breakerCooldown+time.Second)) {
+		t.Fatal("breaker should close after the cooldown")
+	}
+
+	gateway.recordOutcome("mock", outage, now)
+	gateway.recordOutcome("mock", nil, now)
+	gateway.recordOutcome("mock", outage, now)
+	gateway.recordOutcome("mock", outage, now)
+	if gateway.circuitOpen("mock", now) {
+		t.Error("a success should reset the failure count")
+	}
+}
+
+func TestCircuitBreakerIgnoresClientErrors(t *testing.T) {
+	gateway := New(newMemStore(), registry.New(), tools.Builtin())
+	now := time.Now()
+	badKey := &provider.APIError{StatusCode: http.StatusBadRequest, Message: "bad request"}
+	for i := 0; i < breakerThreshold+2; i++ {
+		gateway.recordOutcome("mock", badKey, now)
+	}
+	if gateway.circuitOpen("mock", now) {
+		t.Error("400 responses must not pause the provider")
 	}
 }

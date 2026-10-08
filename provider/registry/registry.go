@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"ai-engine/provider"
+	"ai-engine/provider/anthropic"
 	"ai-engine/provider/openai"
 	"ai-engine/provider/opencode"
 )
@@ -16,8 +17,12 @@ type Registry struct {
 func New() *Registry {
 	adapter := openai.New()
 	return &Registry{adapters: map[string]provider.Adapter{
-		"openai":   adapter,
-		"opencode": opencode.New(),
+		"openai": adapter,
+		// Gemini exposes an OpenAI-compatible endpoint, so the openai adapter
+		// serves it with the provider's endpoint set to that base URL.
+		"gemini":    adapter,
+		"anthropic": anthropic.New(),
+		"opencode":  opencode.New(),
 	}}
 }
 

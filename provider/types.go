@@ -53,6 +53,9 @@ type Response struct {
 	ToolCalls    []ToolCall
 	Usage        Usage
 	FinishReason string
+	// Trail holds the tool steps taken while producing Content, in order: an
+	// assistant message carrying ToolCalls, then one tool message per call.
+	Trail []Message
 }
 
 type Usage struct {

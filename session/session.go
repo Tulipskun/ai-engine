@@ -174,19 +174,11 @@ func (d *D1) Turns(id string) ([]Turn, error) {
 }
 
 func (d *D1) History(id string) ([]provider.Message, error) {
-	rows, err := db.Query("SELECT * FROM turns WHERE session_id = ? ORDER BY seq ASC", id)
+	turns, err := d.Turns(id)
 	if err != nil {
 		return nil, err
 	}
-	messages := make([]provider.Message, 0, len(rows))
-	for _, row := range rows {
-		role := stringField(row, "role")
-		if role != "user" && role != "assistant" && role != "system" {
-			continue
-		}
-		messages = append(messages, provider.Message{Role: role, Content: stringField(row, "text")})
-	}
-	return messages, nil
+	return MessagesFromTurns(turns), nil
 }
 
 func (d *D1) AppendTurns(id string, turns []TurnInput) error {

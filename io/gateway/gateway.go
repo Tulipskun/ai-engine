@@ -42,6 +42,8 @@ type Gateway struct {
 	keyIndex  map[string]int
 	modelMu   sync.Mutex
 	modelList map[string]modelCache
+	brMu      sync.Mutex
+	breakers  map[string]*breaker
 }
 
 type modelCache struct {
@@ -56,6 +58,7 @@ func New(sessions SessionStore, reg *registry.Registry, toolset map[string]tools
 		tools:     toolset,
 		keyIndex:  map[string]int{},
 		modelList: map[string]modelCache{},
+		breakers:  map[string]*breaker{},
 	}
 }
 

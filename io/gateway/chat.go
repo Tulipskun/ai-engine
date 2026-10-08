@@ -371,18 +371,22 @@ func (g *Gateway) complete(ctx context.Context, primary route, fallback *route, 
 			break
 		}
 
-		conversation = append(conversation, provider.Message{
+		assistant := provider.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
-		})
+		}
+		conversation = append(conversation, assistant)
+		final.Trail = append(final.Trail, assistant)
 		for _, call := range resp.ToolCalls {
-			conversation = append(conversation, provider.Message{
+			result := provider.Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
 				Content:    g.runTool(ctx, call),
-			})
+			}
+			conversation = append(conversation, result)
+			final.Trail = append(final.Trail, result)
 		}
 		final.FinishReason = "tool_calls"
 	}
@@ -393,6 +397,21 @@ func (g *Gateway) call(ctx context.Context, target route, request *provider.Requ
 	if len(target.prov.Keys) == 0 {
 		return nil, fmt.Errorf("provider %s has no API keys", target.prov.Name)
 	}
+	now := time.Now()
+	if g.circuitOpen(target.prov.Name, now) {
+		return nil, &provider.APIError{
+			StatusCode: http.StatusServiceUnavailable,
+			Message:    fmt.Sprintf("provider %s is paused after repeated failures", target.prov.Name),
+		}
+	}
+	resp, err := g.callKeys(ctx, target, request, emit, canRetry)
+	if ctx.Err() == nil {
+		g.recordOutcome(target.prov.Name, err, now)
+	}
+	return resp, err
+}
+
+func (g *Gateway) callKeys(ctx context.Context, target route, request *provider.Request, emit func(string) error, canRetry func() bool) (*provider.Response, error) {
 
 	callCtx, cancel := context.WithTimeout(ctx, upstreamWait)
 	defer cancel()
@@ -488,6 +507,7 @@ func (g *Gateway) persist(stored *session.Session, delta []provider.Message, res
 			title = truncate(strings.TrimSpace(message.Content), 60)
 		}
 	}
+	turns = append(turns, session.TrailTurns(resp.Trail)...)
 	turns = append(turns, session.TurnInput{
 		Role:         "assistant",
 		Text:         resp.Content,
@@ -510,24 +530,39 @@ func (g *Gateway) persist(stored *session.Session, delta []provider.Message, res
 	}
 }
 
+// mergeHistory matches the client's messages against the stored conversation.
+// Clients only ever see visible text, so matching skips stored tool steps; the
+// steps that sit between matched messages are kept in full.
 func mergeHistory(stored, incoming []provider.Message) (full, delta []provider.Message) {
+	visible := make([]int, 0, len(stored))
+	for i, message := range stored {
+		if !session.IsToolMessage(message) {
+			visible = append(visible, i)
+		}
+	}
+
 	common := 0
-	for common < len(stored) && common < len(incoming) {
-		if stored[common].Role != incoming[common].Role || stored[common].Content != incoming[common].Content {
+	for common < len(visible) && common < len(incoming) {
+		match := stored[visible[common]]
+		if match.Role != incoming[common].Role || match.Content != incoming[common].Content {
 			break
 		}
 		common++
 	}
 
 	switch {
-	case common == len(stored):
+	case common == len(visible):
 		full = append(append([]provider.Message(nil), stored...), incoming[common:]...)
 		return full, incoming[common:]
 	case common == len(incoming):
 		return stored, nil
 	default:
-		full = append(append([]provider.Message(nil), stored...), incoming...)
-		return full, incoming
+		cut := visible[common-1] + 1
+		if common == 0 {
+			cut = 0
+		}
+		full = append(append([]provider.Message(nil), stored[:cut]...), incoming[common:]...)
+		return full, incoming[common:]
 	}
 }
 
