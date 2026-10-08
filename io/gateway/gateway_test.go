@@ -478,3 +478,30 @@ func TestMergeHistoryWithNoCommonPrefixKeepsStoredSteps(t *testing.T) {
 		t.Errorf("delta = %+v", delta)
 	}
 }
+
+// When the model keeps asking for tools past the round limit, it must still
+// answer: the gateway asks once more without tools.
+func TestToolRoundLimitStillGivesAnAnswer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"tools"`) {
+			writeFake(w, "", []string{"current_time"}, "tool_calls")
+			return
+		}
+		writeFake(w, "here is the answer", nil, "stop")
+	}))
+	defer upstream.Close()
+	config.Providers = []config.Provider{{
+		ID: "9", Name: "mock", APIURL: upstream.URL, Keys: []string{"test-key"}, Adapter: "openai",
+	}}
+	gateway := New(newMemStore(), registry.New(), tools.Builtin())
+
+	recorder := postJSON(t, gateway.Handler(), "/v1/chat/completions",
+		`{"model":"mock/test-model","messages":[{"role":"user","content":"what time"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "here is the answer") {
+		t.Errorf("reply had no answer after the tool limit: %s", recorder.Body.String())
+	}
+}

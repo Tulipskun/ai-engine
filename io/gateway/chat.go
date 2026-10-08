@@ -332,6 +332,10 @@ func (g *Gateway) complete(ctx context.Context, primary route, fallback *route, 
 
 	final := &provider.Response{}
 	var served string
+	// pending is true when the loop stopped on the round limit while the model
+	// still wanted tools. Its last reply is then only tool calls, so one more
+	// call without tools asks it to answer from what it already has.
+	pending := false
 
 	for round := 0; round < maxToolRounds; {
 		request := &provider.Request{
@@ -367,7 +371,8 @@ func (g *Gateway) complete(ctx context.Context, primary route, fallback *route, 
 		final.Usage.TotalTokens += resp.Usage.TotalTokens
 		final.FinishReason = resp.FinishReason
 
-		if len(resp.ToolCalls) == 0 {
+		pending = len(resp.ToolCalls) > 0
+		if !pending {
 			break
 		}
 
@@ -389,6 +394,26 @@ func (g *Gateway) complete(ctx context.Context, primary route, fallback *route, 
 			final.Trail = append(final.Trail, result)
 		}
 		final.FinishReason = "tool_calls"
+	}
+
+	if pending {
+		request := &provider.Request{
+			Model:       current.model,
+			Messages:    session.Trim(conversation, session.DefaultMaxTokens),
+			MaxTokens:   options.maxTokens,
+			Temperature: options.temperature,
+			TopP:        options.topP,
+			Stream:      options.stream,
+		}
+		resp, err := g.call(ctx, current, request, emit, canRetry)
+		if err != nil {
+			return nil, err
+		}
+		final.Content += resp.Content
+		final.Usage.PromptTokens += resp.Usage.PromptTokens
+		final.Usage.CompletionTokens += resp.Usage.CompletionTokens
+		final.Usage.TotalTokens += resp.Usage.TotalTokens
+		final.FinishReason = resp.FinishReason
 	}
 	return final, nil
 }
