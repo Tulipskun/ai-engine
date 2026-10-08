@@ -99,8 +99,7 @@ func startTunnel(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", errors.New("cloudflared not found in PATH")
 	}
-	child, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	child := context.Background()
 	cmd := exec.CommandContext(child, path, "tunnel", "--no-autoupdate",
 		"--metrics", "127.0.0.1:0", "--url", "http://127.0.0.1:8787")
 	stderr, err := cmd.StderrPipe()
