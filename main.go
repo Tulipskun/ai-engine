@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +39,15 @@ func main() {
 
 	if !db.Verify(token) {
 		log.Fatal("CF_TOKEN is invalid")
+	}
+
+	// A newer engine (started later) owns the `nodes` row. If one is already
+	// running, this older instance exits instead of fighting it.
+	if newer, err := newerDaemonRunning(startedAt); err != nil {
+		log.Printf("guard: %v", err)
+	} else if newer {
+		log.Print("a newer ai-engine is already serving; exiting")
+		return
 	}
 
 	startConfigReloader(ctx)
@@ -74,7 +84,7 @@ func main() {
 			log.Fatalf("save tunnel: %v", err)
 		}
 		log.Print("tunnel url saved")
-		go startHeartbeat(ctx, url)
+		go startHeartbeat(ctx, stop, url)
 	}
 
 	<-ctx.Done()
@@ -259,19 +269,37 @@ func (w *sseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// startedAt marks this process; a later start is a newer engine.
+var startedAt = time.Now().Unix()
+
+const versionTag = "ai-engine/1.1"
+
 // startHeartbeat keeps the single `nodes` row ('ai') current so the app can
-// find this daemon: tunnel URL and a heartbeat every 30 seconds.
-func startHeartbeat(ctx context.Context, url string) {
-	beat := func() {
-		_, err := db.Query(
+// find this daemon. Before each write it checks whether a newer engine has
+// taken the row; if so it calls stop so this older instance shuts down.
+func startHeartbeat(ctx context.Context, stop context.CancelFunc, url string) {
+	beat := func() bool {
+		newer, err := newerDaemonRunning(startedAt)
+		if err != nil {
+			log.Printf("heartbeat guard: %v", err)
+		}
+		if newer {
+			log.Print("heartbeat: a newer ai-engine took over; stopping")
+			stop()
+			return false
+		}
+		_, err = db.Query(
 			"INSERT INTO nodes (id, tunnel_url, version, heartbeat) VALUES ('ai', ?, ?, ?) "+
 				"ON CONFLICT(id) DO UPDATE SET tunnel_url = excluded.tunnel_url, version = excluded.version, heartbeat = excluded.heartbeat",
-			url, "ai-engine/1.0", time.Now().Unix())
+			url, fmt.Sprintf("%s started=%d", versionTag, startedAt), time.Now().Unix())
 		if err != nil {
 			log.Printf("heartbeat: %v", err)
 		}
+		return true
 	}
-	beat()
+	if !beat() {
+		return
+	}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -279,7 +307,39 @@ func startHeartbeat(ctx context.Context, url string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			beat()
+			if !beat() {
+				return
+			}
 		}
 	}
+}
+
+// newerDaemonRunning reports whether the `nodes` row was written recently by
+// an engine that started after `started`.
+func newerDaemonRunning(started int64) (bool, error) {
+	rows, err := db.Query("SELECT version, heartbeat FROM nodes WHERE id = 'ai'")
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 {
+		return false, nil
+	}
+	version, _ := rows[0]["version"].(string)
+	beat, _ := rows[0]["heartbeat"].(float64)
+	other := parseStarted(version)
+	fresh := float64(time.Now().Unix()-120) < beat
+	return fresh && other > started, nil
+}
+
+// parseStarted reads "started=<unix>" from the version column (0 if absent).
+func parseStarted(version string) int64 {
+	m := regexp.MustCompile(`started=(\d+)`).FindStringSubmatch(version)
+	if len(m) != 2 {
+		return 0
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
