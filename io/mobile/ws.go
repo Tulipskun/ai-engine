@@ -192,6 +192,14 @@ func handle(p *peer, in inFrame, chat ChatFunc) {
 func (p *peer) answer(ctx context.Context, cancel context.CancelFunc, key string, in inFrame, text string, chat ChatFunc) {
 	defer cancel()
 	defer p.unregister(key)
+	// This runs in its own goroutine, so a panic here would take the whole
+	// daemon down. Report it to the phone as an error instead.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("mobile: answer panicked: %v", r)
+			_ = p.send(outFrame{Kind: "error", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: "เกิดข้อผิดพลาดภายในระบบ ลองส่งอีกครั้ง"})
+		}
+	}()
 
 	onDelta := func(piece string) {
 		_ = p.send(outFrame{Kind: "delta", SessionID: in.SessionID, ClientMsgID: in.ClientMsgID, Text: piece, Role: "model", Agent: "main"})

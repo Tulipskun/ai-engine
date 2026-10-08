@@ -557,9 +557,9 @@ func mergeHistory(stored, incoming []provider.Message) (full, delta []provider.M
 	case common == len(incoming):
 		return stored, nil
 	default:
-		cut := visible[common-1] + 1
-		if common == 0 {
-			cut = 0
+		cut := 0
+		if common > 0 {
+			cut = visible[common-1] + 1
 		}
 		full = append(append([]provider.Message(nil), stored[:cut]...), incoming[common:]...)
 		return full, incoming[common:]

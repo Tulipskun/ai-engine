@@ -460,3 +460,21 @@ func TestCircuitBreakerIgnoresClientErrors(t *testing.T) {
 		t.Error("400 responses must not pause the provider")
 	}
 }
+
+func TestMergeHistoryWithNoCommonPrefixKeepsStoredSteps(t *testing.T) {
+	stored := []provider.Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "c", Name: "current_time", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c", Content: "10:00"},
+		{Role: "assistant", Content: "it is 10:00"},
+	}
+	incoming := []provider.Message{{Role: "user", Content: "a different first message"}}
+
+	full, delta := mergeHistory(stored, incoming)
+	if len(full) != 1 || full[0].Content != "a different first message" {
+		t.Errorf("full = %+v, want only the incoming message when nothing matches", full)
+	}
+	if len(delta) != 1 {
+		t.Errorf("delta = %+v", delta)
+	}
+}
