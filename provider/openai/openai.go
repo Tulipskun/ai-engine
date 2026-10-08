@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"ai-engine/provider"
 )
@@ -166,6 +167,7 @@ func (a *Adapter) Stream(ctx context.Context, req *provider.Request, prov provid
 
 	out := &provider.Response{}
 	calls := map[int]*provider.ToolCall{}
+	var text strings.Builder
 	finish := ""
 
 	err = provider.ReadSSE(resp.Body, func(data string) error {
@@ -192,6 +194,9 @@ func (a *Adapter) Stream(ctx context.Context, req *provider.Request, prov provid
 		for _, choice := range part.Choices {
 			if choice.FinishReason != nil {
 				finish = *choice.FinishReason
+			}
+			if choice.Delta.Content != "" {
+				text.WriteString(choice.Delta.Content)
 			}
 			if choice.Delta.Content != "" && emit != nil {
 				if err := emit(choice.Delta.Content); err != nil {
@@ -221,7 +226,7 @@ func (a *Adapter) Stream(ctx context.Context, req *provider.Request, prov provid
 		return nil, err
 	}
 
-	out.Content = ""
+	out.Content = text.String()
 	out.FinishReason = finish
 	indexes := make([]int, 0, len(calls))
 	for index := range calls {
