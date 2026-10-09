@@ -72,12 +72,7 @@ func Verify(cfToken string) bool {
 		return false
 	}
 
-	accountID, err := getAccountID(cfToken)
-	if err != nil {
-		return false
-	}
-
-	dbID, err := getDatabaseID(cfToken, accountID)
+	accountID, dbID, err := getDatabaseLocation(cfToken)
 	if err != nil {
 		return false
 	}
@@ -88,32 +83,27 @@ func Verify(cfToken string) bool {
 	return true
 }
 
-func getAccountID(cfToken string) (string, error) {
+func getDatabaseLocation(cfToken string) (string, string, error) {
 	var accounts []accountResult
 	if err := get("/accounts", cfToken, &accounts); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if len(accounts) == 0 {
-		return "", fmt.Errorf("db: token has no account")
-	}
-	return accounts[0].ID, nil
-}
-
-func getDatabaseID(cfToken, accountID string) (string, error) {
-	var databases []databaseResult
-	if err := get("/accounts/"+accountID+"/d1/database", cfToken, &databases); err != nil {
-		return "", err
-	}
-	if len(databases) == 0 {
-		return "", fmt.Errorf("db: account has no D1 database")
+		return "", "", fmt.Errorf("db: token has no account")
 	}
 
-	for _, database := range databases {
-		if database.Name == "aixodia" {
-			return database.UUID, nil
+	for _, account := range accounts {
+		var databases []databaseResult
+		if err := get("/accounts/"+account.ID+"/d1/database", cfToken, &databases); err != nil {
+			continue
+		}
+		for _, database := range databases {
+			if database.Name == "aixodia" {
+				return account.ID, database.UUID, nil
+			}
 		}
 	}
-	return databases[0].UUID, nil
+	return "", "", fmt.Errorf("db: D1 database named aixodia was not found in any accessible account")
 }
 
 func SaveTunnel(url string) error {
