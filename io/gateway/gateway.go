@@ -186,9 +186,12 @@ func (g *Gateway) nextKey(name string) int {
 
 func decodeBody(r *http.Request, target any) error {
 	defer r.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(r.Body, requestMaxBody))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, requestMaxBody+1))
 	if err != nil {
 		return fmt.Errorf("cannot read body: %w", err)
+	}
+	if len(raw) > requestMaxBody {
+		return fmt.Errorf("request body exceeds the %d-byte limit", requestMaxBody)
 	}
 	// encoding/json silently replaces invalid bytes with U+FFFD, so a Thai
 	// message sent in the wrong encoding would be saved as a row of "�".
