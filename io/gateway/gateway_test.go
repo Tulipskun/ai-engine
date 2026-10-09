@@ -514,3 +514,16 @@ func TestRejectsInvalidUTF8Body(t *testing.T) {
 		t.Fatalf("status = %d, want 400 for invalid UTF-8", recorder.Code)
 	}
 }
+
+
+func TestRejectsOversizedRequestBody(t *testing.T) {
+	gateway, _ := newTestGateway(t, newMemStore())
+	body := strings.Repeat(" ", requestMaxBody+1)
+	recorder := postJSON(t, gateway.Handler(), "/v1/chat/completions", body)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "exceeds the") {
+		t.Fatalf("body = %s, want request-size error", recorder.Body.String())
+	}
+}
