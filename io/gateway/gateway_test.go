@@ -515,7 +515,6 @@ func TestRejectsInvalidUTF8Body(t *testing.T) {
 	}
 }
 
-
 func TestRejectsOversizedRequestBody(t *testing.T) {
 	gateway, _ := newTestGateway(t, newMemStore())
 	body := strings.Repeat(" ", requestMaxBody+1)
